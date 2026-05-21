@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import sys
+import threading
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import TextIO
+
+import numpy as np
+import sounddevice as sd
+import soundfile as sf
+
+from .adm_model import AdmObject, active_block
+from .osc_emit import AdmOscEmitter
+
+
+class OscPlaybackRef:
+    """
+    Mutable OSC emitter holder. play_adm_wav reads ``current`` each audio block so the GUI can
+    swap presets or connection settings without restarting playback.
+    """
+
+    __slots__ = ("current",)
+
+    def __init__(self, emitter: AdmOscEmitter | object | None) -> None:
+        self.current = emitter
+
+
+class ChannelMixState:
+    """인터리브 WAV 채널(1-based 번호) 단위 뮤트/솔로. 솔로가 하나라도 있으면 솔로 채널만 재생."""
+
+    __slots__ = ("_lock", "_mute", "_solo")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._mute: set[int] = set()
+        self._solo: set[int] = set()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._mute.clear()
+            self._solo.clear()
+
+    def set_mute(self, ch1: int, on: bool) -> None:
+        with self._lock:
+            if on:
+                self._mute.add(ch1)
+            else:
+                self._mute.discard(ch1)
+
+    def set_solo(self, ch1: int, on: bool) -> None:
+        with self._lock:
+            if on:
+                self._solo.add(ch1)
+            else:
+                self._solo.discard(ch1)
+
+    def snapshot_gains(self, n_ch: int) -> np.ndarray:
+        g = np.ones(max(0, n_ch), dtype=np.float32)
+        with self._lock:
+            if self._solo:
+                for i in range(n_ch):
+                    if (i + 1) not in self._solo:
+                        g[i] = 0.0
+            else:
+                for ch1 in self._mute:
+                    if 1 <= ch1 <= n_ch:
+                        g[ch1 - 1] = 0.0
+        return g
+
+
+def coerce_audio_device(device: int | str | None) -> int | str | None:
+    """
+    CLI에서 온 --audio-device 값을 sounddevice에 맞게 정규화합니다.
+    숫자만 있으면 장치 인덱스(int), 아니면 이름 부분 일치용 문자열로 둡니다.
+    """
+    if device is None:
+        return None
+    if isinstance(device, int):
+        return device
+    s = str(device).strip()
+    if s.isdigit():
+        return int(s)
+    return s
+
+
+def _output_device_id(device: int | str | None) -> int | str:
+    if device is not None:
+        return device
+    # sounddevice uses _InputOutputPair: supports default[1] / ['output'], not len().
+    try:
+        out_idx = sd.default.device[1]
+    except (TypeError, IndexError, KeyError):
+        out_idx = None
+    if out_idx is None or (isinstance(out_idx, int) and out_idx < 0):
+        raise RuntimeError("기본 출력 오디오 장치를 찾을 수 없습니다.")
+    return out_idx
+
+
+def max_output_channels(device: int | str | None) -> int:
+    dev = _output_device_id(device)
+    info = sd.query_devices(dev, "output")
+    n = int(info.get("max_output_channels") or 0)
+    return max(1, n)
+
+
+def print_output_audio_devices(stream: TextIO | None = None) -> None:
+    """PortAudio 출력 가능 장치 목록을 인덱스와 함께 stdout에 씁니다."""
+    out = stream or sys.stdout
+    try:
+        default_out = sd.default.device[1]
+    except (TypeError, IndexError, KeyError):
+        default_out = None
+    for i, d in enumerate(sd.query_devices()):
+        n_out = int(d.get("max_output_channels") or 0)
+        if n_out < 1:
+            continue
+        name = d.get("name", "?")
+        sr = int(float(d.get("default_samplerate") or 0))
+        mark = " ← 기본 출력" if default_out is not None and i == default_out else ""
+        print(f"  [{i:3d}]  최대 {n_out:3d}ch  {sr:5d} Hz  {name}{mark}", file=out)
+
+
+def resolve_playback_channels(
+    file_channels: int,
+    requested_out: int | None,
+    device: int | str | None,
+) -> tuple[int, int]:
+    """
+    Returns (out_channels_for_stream, file_channels) after applying device limits.
+    If the file has more channels than the device allows, only the leading channels are played.
+    """
+    if file_channels < 1:
+        raise ValueError("No audio channels in file")
+    cap = max_output_channels(device)
+    want = min(requested_out, file_channels) if requested_out is not None else file_channels
+    out = min(want, cap)
+    if out < 1:
+        out = 1
+    return out, file_channels
+
+
+def _osc_for_audio_block(osc: AdmOscEmitter | OscPlaybackRef | None) -> AdmOscEmitter | object | None:
+    if osc is None:
+        return None
+    if isinstance(osc, OscPlaybackRef):
+        return osc.current
+    return osc
+
+
+def play_adm_wav(
+    path: Path | str,
+    objects: list[AdmObject],
+    osc: AdmOscEmitter | OscPlaybackRef | None,
+    block_frames: int = 512,
+    out_channels: int | None = None,
+    device: int | str | None = None,
+    stop_event: threading.Event | None = None,
+    pause_event: threading.Event | None = None,
+    start_frame: int = 0,
+    on_progress: Callable[[int, int, int], None] | None = None,
+    on_levels: Callable[[list[float]], None] | None = None,
+    channel_mix: ChannelMixState | None = None,
+    quiet_truncation: bool = False,
+    progress_emit_interval_s: float | None = None,
+    levels_emit_interval_s: float | None = None,
+) -> None:
+    """
+    on_progress: (현재 프레임 위치, 총 프레임 수, samplerate) 블록마다 호출.
+    on_levels: 채널별 해당 블록 피크(|x|_∞). 뮤트/솔로 게인 적용 **후**, 장치로 줄 채널 자르기 **전**.
+    channel_mix: GUI 뮤트/솔로(파일 채널 수 기준).
+    stop_event: set 되면 재생 루프 종료.
+    pause_event: set 되면 재생 위치 유지하며 대기(일시정지).
+    start_frame: 파일 내 시작 프레임(0-based, 이전까지 건너뜀).
+    quiet_truncation: True 이면 채널 잘림 안내를 stderr에 찍지 않음(인터랙티브 UI용).
+    progress_emit_interval_s / levels_emit_interval_s: None이면 블록마다 콜백.
+        양수(초)이면 해당 간격으로만 호출(GUI 등 Qt 시그널 부하 완화용).
+    """
+    device = coerce_audio_device(device)
+    path = Path(path)
+    with sf.SoundFile(str(path)) as f:
+        sr = int(f.samplerate)
+        file_ch = f.channels
+        total_frames = int(f.frames)
+        out_ch, _ = resolve_playback_channels(file_ch, out_channels, device)
+        cap = max_output_channels(device)
+        if not quiet_truncation and out_ch < file_ch:
+            extra = (
+                f"출력 장치 최대 {cap}채널이라 앞쪽만 재생합니다. "
+                f"멀티채널 인터페이스 연결 또는 --audio-device 로 전체 경로를 선택할 수 있습니다."
+                if file_ch > cap
+                else "--out-channels 로 제한한 경우입니다."
+            )
+            print(
+                f"참고: 파일 {file_ch}채널 → {out_ch}채널만 재생. {extra}",
+                file=sys.stderr,
+            )
+        dev_id = _output_device_id(device)
+        if start_frame < 0:
+            start_frame = 0
+        if start_frame > total_frames:
+            start_frame = total_frames
+        if start_frame > 0:
+            f.seek(start_frame)
+        pos = start_frame
+        last_progress_t = 0.0
+        last_levels_t = 0.0
+        prog_iv = progress_emit_interval_s
+        lev_iv = levels_emit_interval_s
+        with sd.OutputStream(
+            device=dev_id,
+            samplerate=sr,
+            channels=out_ch,
+            dtype="float32",
+            blocksize=block_frames,
+        ) as stream:
+            while True:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                while pause_event is not None and pause_event.is_set():
+                    time.sleep(0.02)
+                    if stop_event is not None and stop_event.is_set():
+                        break
+                if stop_event is not None and stop_event.is_set():
+                    break
+                data = f.read(block_frames, dtype="float32", always_2d=True)
+                if data.size == 0:
+                    break
+                frames = data.shape[0]
+                data = np.asarray(data, dtype=np.float32, order="C")
+                if channel_mix is not None and data.shape[1] > 0:
+                    gains = channel_mix.snapshot_gains(data.shape[1])
+                    data = data * gains
+                if on_levels is not None and data.shape[1] > 0:
+                    now_mono = time.monotonic()
+                    emit_levels = lev_iv is None or (now_mono - last_levels_t) >= lev_iv
+                    if emit_levels:
+                        peak = np.max(np.abs(data), axis=0)
+                        on_levels([float(x) for x in peak.tolist()])
+                        if lev_iv is not None:
+                            last_levels_t = now_mono
+                if data.shape[1] > out_ch:
+                    data = data[:, :out_ch].copy()
+                t0 = pos / sr
+                emitter = _osc_for_audio_block(osc)
+                if emitter is not None:
+                    for obj in objects:
+                        blk = active_block(obj.blocks, t0)
+                        emitter.send_object_position(obj, blk)
+                if on_progress is not None:
+                    now_mono = time.monotonic()
+                    if prog_iv is None or (now_mono - last_progress_t) >= prog_iv:
+                        on_progress(pos, total_frames, sr)
+                        if prog_iv is not None:
+                            last_progress_t = now_mono
+                stream.write(data)
+                pos += frames
+            if on_progress is not None:
+                on_progress(pos, total_frames, sr)

@@ -1,0 +1,14 @@
+build/
+dist/
+*.egg-info/
+packaging/AppIcon.iconset/
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
+
+# Audio masters / large binaries — kept out of git (use Git LFS or external storage)
+*.wav
+
+# OMC orchestration / session state — never commit
+.omc/
