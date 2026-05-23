@@ -32,6 +32,7 @@ from adm_player.osc_emit import (
     adm_polar_to_osc_aed,
     adm_polar_to_osc_xyz,
 )
+from adm_recorder.osc_ingest import aed_deg_to_xyz
 from adm_player.osc_presets import (
     PRESET_DEFAULT_ENDPOINTS,
     PRESET_ENTRIES,
@@ -462,3 +463,52 @@ def test_lisa_spat_revolution_soundscape_all_share_xyz_only_caching() -> None:
         em.send_object_position(_obj(1), blk)
         emits = [a for a, _ in sent if a == addr_pattern]
         assert len(emits) == 1, f"{preset_id}: dedupe failed, got {len(emits)} emits at {addr_pattern}"
+
+
+# ------------------------------------------------------------------ C_DIST_INGEST: recorder ingest round-trip
+
+def test_ingest_aed_10m_normalizes_to_half() -> None:
+    """Emitter encodes 10 m as 10/20 = 0.5; recorder ingest must decode the wire value 0.5
+    back as-is (already normalized) AND when given a raw metric value > 1 must also
+    divide by ADM_OSC_MAX_DIST (20) not by 10.
+
+    Round-trip: emitter polar_to_osc_aed(dist=10m) → wire_d=0.5 → aed_deg_to_xyz(dist=0.5)
+    → radius of resulting unit vector == 0.5 (the normalized distance).
+    This test FAILS on the old /10 code (which produced 1.0 for dist=10) and PASSES after
+    the /ADM_OSC_MAX_DIST fix.
+    """
+    # Emitter side: 10 m source at az=0, el=0
+    pos_10m = ObjectPosition(mode="polar", azimuth=0.0, elevation=0.0, distance=10.0)
+    _, _, wire_d = adm_polar_to_osc_aed(pos_10m, 0.0, False)
+    assert wire_d == pytest.approx(0.5, abs=1e-9), f"emitter must encode 10m as 0.5; got {wire_d}"
+
+    # Ingest side: wire_d=0.5 is already normalized (≤1.0) → must pass straight through
+    x, y, z = aed_deg_to_xyz(0.0, 0.0, wire_d)
+    r = (x * x + y * y + z * z) ** 0.5
+    assert r == pytest.approx(0.5, abs=1e-6), (
+        f"ingest of already-normalized wire_d=0.5 must give radius 0.5; got {r}"
+    )
+
+    # Ingest side: raw metric value 10 (> 1.0) must divide by ADM_OSC_MAX_DIST (20), not 10
+    x2, y2, z2 = aed_deg_to_xyz(0.0, 0.0, 10.0)
+    r2 = (x2 * x2 + y2 * y2 + z2 * z2) ** 0.5
+    assert r2 == pytest.approx(10.0 / ADM_OSC_MAX_DIST, abs=1e-6), (
+        f"ingest of raw 10m must give radius 10/20=0.5; got {r2} (old /10 bug gives 1.0)"
+    )
+
+
+def test_ingest_aed_20m_normalizes_to_one() -> None:
+    """Emitter encodes 20 m as 20/20 = 1.0; ingest must recover radius 1.0."""
+    pos_20m = ObjectPosition(mode="polar", azimuth=0.0, elevation=0.0, distance=20.0)
+    _, _, wire_d = adm_polar_to_osc_aed(pos_20m, 0.0, False)
+    assert wire_d == pytest.approx(1.0, abs=1e-9)
+
+    # wire_d == 1.0 is ≤ 1.0 → normalized passthrough
+    x, y, z = aed_deg_to_xyz(0.0, 0.0, wire_d)
+    r = (x * x + y * y + z * z) ** 0.5
+    assert r == pytest.approx(1.0, abs=1e-6)
+
+    # raw metric 20 (> 1.0) → 20/20 = 1.0
+    x2, y2, z2 = aed_deg_to_xyz(0.0, 0.0, 20.0)
+    r2 = (x2 * x2 + y2 * y2 + z2 * z2) ** 0.5
+    assert r2 == pytest.approx(1.0, abs=1e-6)

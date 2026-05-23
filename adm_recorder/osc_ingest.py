@@ -7,6 +7,7 @@ from typing import Any
 
 from pythonosc.dispatcher import Dispatcher
 
+from adm_player.osc_emit import ADM_OSC_MAX_DIST
 from .osc_udp_server import start_threading_osc_udp
 
 FrameSupplier = Callable[[], int]
@@ -23,7 +24,7 @@ def aed_deg_to_xyz(az: float, el: float, dist: float) -> tuple[float, float, flo
     """Same normalization as adm_player adm_polar_to_osc_xyz."""
     d = float(dist if dist is not None else 1.0)
     if d > 1.0:
-        d = min(1.0, max(0.0, d / 10.0))
+        d = min(1.0, max(0.0, d / ADM_OSC_MAX_DIST))
     else:
         d = min(1.0, max(0.0, d))
     az_r = math.radians(float(az))
