@@ -2134,7 +2134,7 @@ def main() -> int:
             if error:
                 err_cell = self._playlist.item(row, 7)
                 if err_cell is not None:
-                    err_cell.setText(err[:200])
+                    err_cell.setText(error[:200])
                     err_cell.setToolTip(error)
             if row == self._playlist.currentRow():
                 self._update_now_playing_title()
