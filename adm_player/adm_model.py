@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -335,9 +336,22 @@ def parse_adm_objects(axml: str, sample_rate: float, chna_uid_to_channel: dict[s
 
 
 def active_block(blocks: list[ObjectBlock], t_sec: float) -> ObjectBlock | None:
-    best: ObjectBlock | None = None
-    for b in blocks:
-        if b.start_sec <= t_sec < b.end_sec:
-            if best is None or b.start_sec >= best.start_sec:
-                best = b
-    return best
+    """Return the block covering ``t_sec`` with the largest ``start_sec``.
+
+    Assumes ``blocks`` is sorted ascending by ``start_sec`` — which
+    ``parse_adm_objects`` guarantees (``blocks.sort(key=...)``). Uses
+    ``bisect`` to jump to the right-most block whose ``start_sec <= t_sec``
+    (the candidate with the largest start), then walks backwards only across
+    overlapping/gap blocks. For the common contiguous, non-overlapping ADM
+    layout this is O(log n) + a single containment check; the backward walk
+    keeps the result identical to the previous linear scan for any layout.
+    """
+    # Right-most index with start_sec <= t_sec (key= requires Python 3.10+).
+    i = bisect.bisect_right(blocks, t_sec, key=lambda b: b.start_sec)
+    for j in range(i - 1, -1, -1):
+        b = blocks[j]
+        if t_sec < b.end_sec:
+            # b has the largest start_sec among start<=t blocks seen so far
+            # and covers t_sec → it is the match the linear scan would pick.
+            return b
+    return None
