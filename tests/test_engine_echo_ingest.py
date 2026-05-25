@@ -36,14 +36,14 @@ def _wait_until(pred: Callable[[], bool], timeout: float = 2.0) -> bool:
 
 class TestEngineEchoIngest(unittest.TestCase):
     def test_handshake_payload_matches_engine_contract(self) -> None:
-        """subscribe() must emit ,iis [schema, echo_port, tag] (CommandDecoder parse)."""
+        """subscribe() must emit ,sii [tag, schema, echo_port] (D-4: string first)."""
         sent: list[tuple[str, Any]] = []
         sub = EngineEchoSubscriber(
             "127.0.0.1", 9100, 9102, on_send=lambda a, v: sent.append((a, v))
         )
         self.addCleanup(sub.close)
         sub.subscribe()
-        self.assertEqual(sent, [("/sys/handshake", [SCHEMA_VERSION, 9102, ECHO_SUBSCRIBER_TAG])])
+        self.assertEqual(sent, [("/sys/handshake", [ECHO_SUBSCRIBER_TAG, SCHEMA_VERSION, 9102])])
 
     def test_echo_round_trip_records_position_and_meta(self) -> None:
         handshakes: list[int] = []  # reply_port seen per handshake
@@ -64,9 +64,14 @@ class TestEngineEchoIngest(unittest.TestCase):
 
         # ── fake engine: echo a burst back to reply_port on handshake ──
         def on_handshake(_addr: str, *args: Any) -> None:
-            self.assertEqual(int(args[0]), SCHEMA_VERSION)
-            self.assertEqual(args[2], ECHO_SUBSCRIBER_TAG)
-            reply_port = int(args[1])
+            # Read by *type index*, exactly as the engine CommandDecoder does
+            # (ints[0]=schema, ints[1]=reply_port, strings[0]=tag) — this is what
+            # makes the ,sii ordering wire-correct regardless of arg position.
+            ints = [a for a in args if isinstance(a, int) and not isinstance(a, bool)]
+            strs = [a for a in args if isinstance(a, str)]
+            self.assertEqual(ints[0], SCHEMA_VERSION)
+            self.assertEqual(strs[0], ECHO_SUBSCRIBER_TAG)
+            reply_port = int(ints[1])
             handshakes.append(reply_port)
             echo = udp_client.SimpleUDPClient("127.0.0.1", reply_port)
             echo.send_message("/adm/obj/3/aed", [30.0, 10.0, 0.5])

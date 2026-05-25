@@ -7,8 +7,11 @@ trajectory — player, VST3, WebGUI, scene loads — not just what one player se
 Wire contract (recorder → engine, verified against
 ``spatial_engine/core/src/ipc``)::
 
-    /sys/handshake  ,iis  schema_version, echo_port, "echo_subscriber=adm_object_stream"
+    /sys/handshake  ,sii  "echo_subscriber=adm_object_stream", schema_version, echo_port
     /hb/ping        ,f    unix_seconds        (every HEARTBEAT_SEC; refreshes TTL)
+
+Note the ``,sii`` ordering (string first) — see :meth:`subscribe` for why the
+documented ``,iis`` shape would be mis-decoded by the engine (D-4 quirk).
 
 * The handshake goes to the engine's single inbound OSC socket (default 9100 —
   the same port the player streams ``/adm/obj/N/aed`` to). The engine captures
@@ -111,15 +114,23 @@ class EngineEchoSubscriber:
     # ── handshake ────────────────────────────────────────────────────────────
 
     def subscribe(self) -> None:
-        """One-shot ``/sys/handshake ,iis`` advertising ``echo_port`` as reply_port.
+        """One-shot ``/sys/handshake`` advertising ``echo_port`` as reply_port.
 
-        python-osc infers ``,iis`` from ``[int, int, str]``, matching the
-        ``CommandDecoder`` parse (getInt(0)=schema, getInt(1)=reply_port,
-        strings[0]=tag).
+        Sent as ``,sii [tag, schema, echo_port]`` — string first. This dodges the
+        engine's D-4 quirk: ``CommandDecoder::buildCommand`` treats *any* message
+        whose type tags start ``ii`` as carrying a leading ``seq, id`` pair and
+        strips the first two ints, so the documented ``,iis`` ordering would make
+        the engine read ``schema`` and ``reply_port`` as 0 — leaving the recorder
+        unregistered (``reply_port > 0`` is required at SpatialEngine.cpp echo
+        registration) and the handshake version-mismatched. The engine reads
+        these fields by *type index* (``ints[0]``=schema, ``ints[1]``=reply_port,
+        ``strings[0]``=tag), not absolute position, so leading with the string is
+        wire-correct today and stays correct if the engine later carves
+        ``/sys/handshake`` out of the seq/id heuristic.
         """
         self._send(
             "/sys/handshake",
-            [self._schema_version, self._echo_port, ECHO_SUBSCRIBER_TAG],
+            [ECHO_SUBSCRIBER_TAG, self._schema_version, self._echo_port],
         )
 
     # ── heartbeat ────────────────────────────────────────────────────────────
