@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -15,16 +16,34 @@ class PositionEvent:
     z: float
 
 
+@dataclass
+class MetaEvent:
+    """Sample-aligned non-positional ADM field echoed by the engine (M5.2).
+
+    ``kind`` is one of ``gain``/``mute``/``active``/``width``/``name``; ``value``
+    is forwarded raw (float for gain/width, int for mute/active, str for name).
+    The axml writer (M5.3) maps these onto ``audioBlockFormat`` — the store only
+    records them so no engine-side trajectory is lost.
+    """
+
+    channel_1based: int
+    frame: int
+    kind: str
+    value: Any
+
+
 class TimelineStore:
     """Thread-safe OSC→frame log for axml blocks after recording."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._events: list[PositionEvent] = []
+        self._meta: list[MetaEvent] = []
 
     def clear(self) -> None:
         with self._lock:
             self._events.clear()
+            self._meta.clear()
 
     def add_cartesian(
         self,
@@ -39,9 +58,23 @@ class TimelineStore:
                 PositionEvent(int(channel_1based), int(frame), float(x), float(y), float(z))
             )
 
+    def add_meta(
+        self,
+        channel_1based: int,
+        frame: int,
+        kind: str,
+        value: Any,
+    ) -> None:
+        with self._lock:
+            self._meta.append(MetaEvent(int(channel_1based), int(frame), str(kind), value))
+
     def snapshot(self) -> list[PositionEvent]:
         with self._lock:
             return list(self._events)
+
+    def snapshot_meta(self) -> list[MetaEvent]:
+        with self._lock:
+            return list(self._meta)
 
 def events_to_blocks_per_channel(
     events: list[PositionEvent],

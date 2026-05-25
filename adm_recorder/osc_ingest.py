@@ -14,6 +14,13 @@ FrameSupplier = Callable[[], int]
 
 OscXYZCallback = Callable[[int, int, float, float, float], None]
 RawOscCallback = Callable[[str, list[Any]], None]
+# (channel_1based, frame, kind, value) — kind in {gain,mute,active,width,name}.
+OscMetaCallback = Callable[[int, int, str, Any], None]
+
+# Non-positional ADM-OSC fields the engine echoes (M5.1). gain/width are floats,
+# mute/active are ints, name is a string; we forward the raw value untouched and
+# let the timeline/axml layer interpret it.
+_META_KINDS = ("gain", "mute", "active", "width", "name")
 
 
 def _clamp11(v: float) -> float:
@@ -77,17 +84,24 @@ class OscIngestRouter:
         on_xyz: OscXYZCallback,
         custom_patterns: dict[str, str] | None = None,
         on_raw: RawOscCallback | None = None,
+        on_meta: OscMetaCallback | None = None,
     ) -> None:
         self._preset = preset
         self._get_frame = get_frame
         self._on_xyz = on_xyz
         self._custom = dict(custom_patterns) if custom_patterns else {}
         self._on_raw = on_raw
+        self._on_meta = on_meta
 
     def _emit(self, ch: int, x: float, y: float, z: float) -> None:
         if ch < 1:
             return
         self._on_xyz(ch, int(self._get_frame()), x, y, z)
+
+    def _emit_meta(self, ch: int, kind: str, value: Any) -> None:
+        if ch < 1 or self._on_meta is None:
+            return
+        self._on_meta(ch, int(self._get_frame()), kind, value)
 
     def register(self, d: Dispatcher) -> None:
         p = self._preset
@@ -103,6 +117,15 @@ class OscIngestRouter:
             elif kind == "aed" and len(args) >= 3:
                 x, y, z = aed_deg_to_xyz(float(args[0]), float(args[1]), float(args[2]))
                 self._emit(ch, x, y, z)
+
+        def adm_meta(addr: str, args: list[Any]) -> None:
+            # /adm/obj/N/{gain,mute,active,width,name} — engine echo (M5.1).
+            if self._on_meta is None:
+                return
+            m = re.search(r"/obj/(\d+)/(gain|mute|active|width|name)$", addr)
+            if not m or not args:
+                return
+            self._emit_meta(int(m.group(1)), m.group(2), args[0])
 
         def fm_xyz(addr: str, args: list[Any]) -> None:
             m = re.search(r"/fm/obj/pos/xyz/(\d+)$", addr)
@@ -152,7 +175,7 @@ class OscIngestRouter:
 
         handlers: list[Callable[[str, list[Any]], None]] = []
         if p == "adm":
-            handlers = [adm_like]
+            handlers = [adm_like, adm_meta]
         elif p == "spat_revolution":
             handlers = [spat_src]
         elif p == "lisa":
