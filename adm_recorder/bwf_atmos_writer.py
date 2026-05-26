@@ -8,7 +8,7 @@ import numpy as np
 import soundfile as sf
 
 from .channel_config import ChannelMapState, ChannelRole
-from .timeline_store import frames_to_smpte_timecode
+from .timeline_store import ObjectBlock, frames_to_smpte_timecode
 
 # Streaming PCM_24 encoder constants — keep RAM usage flat regardless of master length.
 PCM24_BYTES = 3
@@ -305,6 +305,19 @@ def _ab_id_from_ac(ac_id: str, z: int) -> str:
     return f"AB_{rest}_{z & 0xFFFFFFFF:08x}"
 
 
+def _as_object_block(b: ObjectBlock | tuple) -> ObjectBlock:
+    """Accept a legacy ``(start, end, x, y, z)`` tuple or a full :class:`ObjectBlock`.
+
+    Keeps every pre-M5.3 caller (which passes position-only 5-tuples) working
+    without change while new callers can carry gain/width.
+    """
+    if isinstance(b, ObjectBlock):
+        return b
+    gain = float(b[5]) if len(b) > 5 and b[5] is not None else None
+    width = float(b[6]) if len(b) > 6 and b[6] is not None else None
+    return ObjectBlock(int(b[0]), int(b[1]), float(b[2]), float(b[3]), float(b[4]), gain, width)
+
+
 def _jump_interpolation_length(sample_rate: float) -> str:
     if abs(sample_rate - 48000.0) < 0.5:
         return "0.005208"
@@ -317,18 +330,24 @@ def build_axml_ebu(
     *,
     channel_roles: list[ChannelRole],
     bed_assignments: list[tuple[int, tuple[str, float, float, float]]],
-    blocks_per_object: dict[int, list[tuple[int, int, float, float, float]]],
+    blocks_per_object: dict[int, list[ObjectBlock | tuple]],
     total_frames: int,
     sample_rate: float,
     programme_name: str = "ADM Recorder",
+    object_names: dict[int, str] | None = None,
 ) -> tuple[str, bytes]:
     """
     Nuendo-compatible ADM: ebuCoreMain → audioFormatExtended, grouped bed object,
     element order matching commercial Atmos masters; lowercase hex IDs.
+
+    ``blocks_per_object`` entries may be legacy ``(start, end, x, y, z)`` tuples or
+    :class:`ObjectBlock` carrying per-block ``gain``/``width`` (M5.3). ``object_names``
+    overrides ``audioObjectName`` per object channel (else ``Atmos_Obj_{n}``).
     """
     sr = float(sample_rate)
     if int(round(sr)) not in (48000, 96000):
         raise ValueError("sample_rate must be 48000 or 96000")
+    names = object_names or {}
 
     sr_s = str(int(round(sr)))
     bed_set = {b[0] for b in bed_assignments}
@@ -431,7 +450,7 @@ def build_axml_ebu(
             afe,
             "audioObject",
             audioObjectID=ao_id,
-            audioObjectName=f"Atmos_Obj_{oi}",
+            audioObjectName=names.get(ch1) or f"Atmos_Obj_{oi}",
             start="00:00:00.00000",
             duration=prog_dur,
         )
@@ -500,11 +519,12 @@ def build_axml_ebu(
                 blks = [(0, total_frames, 0.0, 0.0, 0.0)]
             jmp = _jump_interpolation_length(sr)
             bi = 1
-            for start_f, end_f, pxx, pyy, pzz in blks:
-                if end_f <= start_f:
+            for blk in blks:
+                b = _as_object_block(blk)
+                if b.end_frame <= b.start_frame:
                     continue
-                st = frames_to_smpte_timecode(start_f, sr)
-                span = max(1e-9, (end_f - start_f) / sr)
+                st = frames_to_smpte_timecode(b.start_frame, sr)
+                span = max(1e-9, (b.end_frame - b.start_frame) / sr)
                 h = int(span // 3600)
                 m = int((span % 3600) // 60)
                 s = span - h * 3600 - m * 60
@@ -518,9 +538,17 @@ def build_axml_ebu(
                 )
                 bi += 1
                 _sub(bf, "cartesian", "1")
-                _sub(bf, "position", f"{pxx:.8f}", coordinate="X")
-                _sub(bf, "position", f"{pyy:.8f}", coordinate="Y")
-                _sub(bf, "position", f"{pzz:.8f}", coordinate="Z")
+                _sub(bf, "position", f"{b.x:.8f}", coordinate="X")
+                _sub(bf, "position", f"{b.y:.8f}", coordinate="Y")
+                _sub(bf, "position", f"{b.z:.8f}", coordinate="Z")
+                # M5.3: gain is linear (mute already folded to 0.0 by the
+                # combiner); width is the BS.2076 angular extent, forwarded from
+                # ADM-OSC unchanged. Both are omitted when never sent, so
+                # position-only masters are byte-identical to before.
+                if b.gain is not None:
+                    _sub(bf, "gain", f"{b.gain:.6f}")
+                if b.width is not None:
+                    _sub(bf, "width", f"{b.width:.6f}")
                 jp = _sub(bf, "jumpPosition", "1")
                 jp.set("interpolationLength", jmp)
 
@@ -601,9 +629,10 @@ def finalize_bwf_session(
     temp_wav: Path,
     out_bwf: Path,
     cmap: ChannelMapState,
-    blocks_per_object: dict[int, list[tuple[int, int, float, float, float]]],
+    blocks_per_object: dict[int, list[ObjectBlock | tuple]],
     total_frames: int,
     sample_rate: float,
+    object_names: dict[int, str] | None = None,
 ) -> None:
     bed_asg = cmap.bed_assignments_ordered()
     roles = cmap.roles
@@ -613,5 +642,6 @@ def finalize_bwf_session(
         blocks_per_object=blocks_per_object,
         total_frames=total_frames,
         sample_rate=sample_rate,
+        object_names=object_names,
     )
     embed_axml_chna_into_wav(temp_wav, out_bwf, axml, chna)

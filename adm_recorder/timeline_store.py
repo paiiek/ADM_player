@@ -32,6 +32,26 @@ class MetaEvent:
     value: Any
 
 
+@dataclass
+class ObjectBlock:
+    """A position block enriched with the gain/width in effect at its start (M5.3).
+
+    ``gain``/``width`` are ``None`` when no such :class:`MetaEvent` preceded the
+    block — the axml writer then omits the element, so position-only output stays
+    byte-identical to the pre-M5.3 behaviour. ``mute`` is folded into ``gain``
+    (muted → ``0.0``) by :func:`events_to_object_blocks`, so the writer never has
+    to reason about mute.
+    """
+
+    start_frame: int
+    end_frame: int
+    x: float
+    y: float
+    z: float
+    gain: float | None = None
+    width: float | None = None
+
+
 class TimelineStore:
     """Thread-safe OSC→frame log for axml blocks after recording."""
 
@@ -101,6 +121,67 @@ def events_to_blocks_per_channel(
             pass
         out[ch] = blocks
     return out
+
+
+def _meta_state_at(
+    ch_metas: list[MetaEvent], frame: int
+) -> tuple[float | None, float | None]:
+    """Resolve the (gain, width) effective at ``frame`` from a channel's metas.
+
+    ``ch_metas`` must be ordered by frame. The returned gain already reflects
+    mute: while muted the effective gain is ``0.0``; an unmute reveals the last
+    explicit ``/gain`` again (``None`` if none was ever sent, so the writer omits
+    the element). ``active`` is ignored here — it is a block-boundary hint for a
+    later milestone, not a rendered field.
+    """
+    cur_gain: float | None = None
+    cur_width: float | None = None
+    muted = False
+    for m in ch_metas:
+        if m.frame > frame:
+            break
+        if m.kind == "gain":
+            cur_gain = float(m.value)
+        elif m.kind == "width":
+            cur_width = float(m.value)
+        elif m.kind == "mute":
+            muted = bool(int(m.value))
+    return (0.0 if muted else cur_gain), cur_width
+
+
+def events_to_object_blocks(
+    events: list[PositionEvent],
+    metas: list[MetaEvent],
+    total_frames: int,
+    sample_rate: float,
+) -> tuple[dict[int, list[ObjectBlock]], dict[int, str]]:
+    """Position blocks enriched with the gain/width effective at each block start,
+    plus the last-seen object name per channel.
+
+    Blocks are still cut on **position** changes (same boundaries as
+    :func:`events_to_blocks_per_channel`); the gain/width step functions are then
+    sampled at each block's start frame. ``mute`` becomes gain ``0.0`` for the
+    muted span, and ``name`` collapses to its last value. Returns
+    ``(blocks_by_channel, names_by_channel)``.
+    """
+    pos_blocks = events_to_blocks_per_channel(events, total_frames, sample_rate)
+
+    metas_by_ch: dict[int, list[MetaEvent]] = {}
+    names_by_ch: dict[int, str] = {}
+    for m in sorted(metas, key=lambda e: (e.channel_1based, e.frame)):
+        if m.kind == "name":
+            names_by_ch[m.channel_1based] = str(m.value)  # last wins
+        else:
+            metas_by_ch.setdefault(m.channel_1based, []).append(m)
+
+    out: dict[int, list[ObjectBlock]] = {}
+    for ch, blocks in pos_blocks.items():
+        ch_metas = metas_by_ch.get(ch, [])
+        out[ch] = [
+            ObjectBlock(s, e, x, y, z, *_meta_state_at(ch_metas, s))
+            for (s, e, x, y, z) in blocks
+        ]
+    return out, names_by_ch
 
 
 def frames_to_smpte_timecode(frame: int, sample_rate: float) -> str:

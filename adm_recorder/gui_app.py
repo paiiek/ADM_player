@@ -60,7 +60,7 @@ from .engine_echo import start_engine_echo_ingest
 from .osc_control import OscControlBridge, start_osc_control_server
 from .osc_ingest import OscIngestRouter, start_osc_server
 from .osc_record_throttle import OSC_POSITION_RECORD_HZ, make_position_callback
-from .timeline_store import TimelineStore, events_to_blocks_per_channel
+from .timeline_store import ObjectBlock, TimelineStore, events_to_object_blocks
 
 # Dark UI aligned with ADM Player
 APP_STYLESHEET = """
@@ -953,13 +953,17 @@ class MainWindow(QMainWindow):
             return
 
         events = self._timeline.snapshot()
-        blocks_raw = events_to_blocks_per_channel(events, total_frames, sr)
-        blocks: dict[int, list[tuple[int, int, float, float, float]]] = {}
+        metas = self._timeline.snapshot_meta()
+        blocks_raw, names_raw = events_to_object_blocks(events, metas, total_frames, sr)
+        blocks: dict[int, list[ObjectBlock]] = {}
+        object_names: dict[int, str] = {}
         for r, role in enumerate(self._cmap.roles):
             ch1 = r + 1
             if role != ChannelRole.OBJECT:
                 continue
             blocks[ch1] = blocks_raw.get(ch1, [])
+            if ch1 in names_raw:
+                object_names[ch1] = names_raw[ch1]
 
         raw_out = Path(self._out_path.text().strip())
         out = _unique_output_path(raw_out)
@@ -973,6 +977,7 @@ class MainWindow(QMainWindow):
                 blocks_per_object=blocks,
                 total_frames=total_frames,
                 sample_rate=sr,
+                object_names=object_names,
             )
         except Exception as e:
             self._log_ui("ERROR", f"Save: failed to write WAV/metadata: {e}")
