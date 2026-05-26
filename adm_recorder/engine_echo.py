@@ -28,9 +28,14 @@ documented ``,iis`` shape would be mis-decoded by the engine (D-4 quirk).
   reserved for the external *player* liveness latch (ADR 0018 D-5) — the
   recorder is not the player and must not reset that latch.
 
-This module owns only the *control* side (handshake + heartbeat). The inbound
-echo ingest reuses the existing :func:`adm_recorder.osc_ingest.start_osc_server`
-with ``OscIngestRouter(preset="adm")``.
+:class:`EngineEchoSubscriber` owns only the *control* side (handshake +
+heartbeat). The inbound echo ingest reuses the existing
+:func:`adm_recorder.osc_ingest.start_osc_server` with
+``OscIngestRouter(preset="adm")``. :func:`start_engine_echo_ingest` wires the
+two together into one closable :class:`EngineEchoSession` so callers (the GUI,
+tests, a future headless CLI) get the whole echo pipeline in one call — and so
+the ordering invariant *bind the ingest socket before handshaking* is enforced
+in one place rather than re-derived at every call site.
 """
 from __future__ import annotations
 
@@ -38,9 +43,18 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pythonosc import udp_client
+
+from .osc_ingest import (
+    OscIngestRouter,
+    OscMetaCallback,
+    OscXYZCallback,
+    RawOscCallback,
+    start_osc_server,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -164,3 +178,104 @@ class EngineEchoSubscriber:
         if t.is_alive():
             _log.warning("echo heartbeat thread did not exit within %.1fs", timeout)
         self._thread = None
+
+
+@dataclass
+class EngineEchoSession:
+    """A live recorder⇄engine echo pipeline: ingest server + echo subscriber.
+
+    Returned by :func:`start_engine_echo_ingest`. Call :meth:`close` (or use it
+    as a context manager) to stop the heartbeat thread and tear the ingest
+    socket down. :meth:`close` is idempotent.
+    """
+
+    server: Any
+    thread: Any
+    subscriber: EngineEchoSubscriber
+    listen_port: int
+
+    def __enter__(self) -> EngineEchoSession:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        # Stop the heartbeat first so we stop advertising a reply socket we are
+        # about to close; then drop the ingest server.
+        self.subscriber.close()
+        srv = self.server
+        if srv is not None:
+            try:
+                srv.shutdown()
+                srv.server_close()
+            except Exception:
+                pass
+            self.server = None
+            self.thread = None
+
+
+def start_engine_echo_ingest(
+    *,
+    bind_host: str,
+    listen_port: int,
+    engine_host: str,
+    engine_port: int,
+    get_frame: Callable[[], int],
+    on_xyz: OscXYZCallback,
+    on_meta: OscMetaCallback | None = None,
+    on_raw: RawOscCallback | None = None,
+    preset: str = "adm",
+    schema_version: int = SCHEMA_VERSION,
+    heartbeat_sec: float = DEFAULT_HEARTBEAT_SEC,
+    on_send: Callable[[str, Any], None] | None = None,
+) -> EngineEchoSession:
+    """Bind the echo ingest socket, then subscribe to the engine echo plane.
+
+    The ingest server is bound *first* so the engine always has a live
+    destination for the ``/sys/handshake_ok`` reply and the echo burst it sends
+    the instant it registers us. ``listen_port=0`` asks the OS for an ephemeral
+    port; the actually-bound port is read back and advertised to the engine as
+    the ``reply_port`` (and returned as :attr:`EngineEchoSession.listen_port`),
+    so callers never have to pre-reserve a port.
+
+    ``preset`` defaults to ``"adm"`` because the engine echo plane only ever
+    emits ADM-OSC ``/adm/obj/N/...`` — the other presets exist for the
+    standalone *player*-listening mode, not here.
+
+    On any failure starting the subscriber the ingest socket is torn down before
+    re-raising, so a half-open pipeline is never returned.
+    """
+    router = OscIngestRouter(
+        preset,
+        get_frame,
+        on_xyz,
+        on_raw=on_raw,
+        on_meta=on_meta,
+    )
+    server, thread = start_osc_server(bind_host, listen_port, router)
+    try:
+        actual_port = int(server.server_address[1])
+        subscriber = EngineEchoSubscriber(
+            engine_host,
+            engine_port,
+            actual_port,
+            schema_version=schema_version,
+            heartbeat_sec=heartbeat_sec,
+            on_send=on_send,
+        )
+        subscriber.start()
+    except BaseException:
+        # Never hand back a server with no subscriber driving it.
+        try:
+            server.shutdown()
+            server.server_close()
+        except Exception:
+            pass
+        raise
+    return EngineEchoSession(
+        server=server,
+        thread=thread,
+        subscriber=subscriber,
+        listen_port=actual_port,
+    )

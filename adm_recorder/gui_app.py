@@ -56,6 +56,7 @@ from .input_routing import (
     resize_route,
     save_route_to_settings,
 )
+from .engine_echo import start_engine_echo_ingest
 from .osc_control import OscControlBridge, start_osc_control_server
 from .osc_ingest import OscIngestRouter, start_osc_server
 from .osc_record_throttle import OSC_POSITION_RECORD_HZ, make_position_callback
@@ -162,6 +163,7 @@ class MainWindow(QMainWindow):
         self._capture: AudioCapture | None = None
         self._osc_srv = None
         self._osc_thread = None
+        self._echo_session = None  # set in engine-echo source mode
         self._temp_wav: Path | None = None
         self._sr = 48000
         self._osc_log_bridge = _OscLogBridge()
@@ -308,14 +310,50 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             self._ctrl_port.setValue(9990)
         ig.addWidget(self._ctrl_port, 6, 1)
-        ig.addWidget(QLabel("Preset"), 7, 0)
+        ig.addWidget(QLabel("OSC source"), 7, 0)
+        self._osc_source_combo = QComboBox()
+        self._osc_source_combo.addItem("Player — listen here", "player")
+        self._osc_source_combo.addItem("Engine echo — subscribe", "engine")
+        self._osc_source_combo.setToolTip(
+            "Player: bind 'OSC in' and record whatever a player/tool streams to it.\n"
+            "Engine echo: subscribe to spatial_engine's echo plane so every source "
+            "the engine sees (player, VST3, WebGUI, scene loads) is captured. "
+            "'OSC in' then becomes the local port the engine echoes back to "
+            "(advertised as the handshake reply_port); the preset is fixed to ADM."
+        )
+        _src = self._settings.value("recorder/osc_source", "player")
+        _src = _src if _src in ("player", "engine") else "player"
+        _si = self._osc_source_combo.findData(_src)
+        if _si >= 0:
+            self._osc_source_combo.setCurrentIndex(_si)
+        ig.addWidget(self._osc_source_combo, 7, 1)
+        ig.addWidget(QLabel("Engine"), 8, 0)
+        eng_row = QHBoxLayout()
+        _eh = self._settings.value("recorder/engine_host", "127.0.0.1")
+        self._engine_host = QLineEdit(str(_eh) if _eh else "127.0.0.1")
+        self._engine_host.setToolTip(
+            "spatial_engine host. The handshake/heartbeat go to its inbound OSC "
+            "socket; it replies the echo stream to us."
+        )
+        self._engine_port = QSpinBox()
+        self._engine_port.setRange(1, 65535)
+        try:
+            self._engine_port.setValue(int(self._settings.value("recorder/engine_port", 9100)))
+        except (TypeError, ValueError):
+            self._engine_port.setValue(9100)
+        self._engine_port.setToolTip("Engine inbound OSC port (default 9100).")
+        eng_row.addWidget(self._engine_host, 1)
+        eng_row.addWidget(QLabel(":"))
+        eng_row.addWidget(self._engine_port)
+        ig.addLayout(eng_row, 8, 1)
+        ig.addWidget(QLabel("Preset"), 9, 0)
         self._preset_combo = QComboBox()
         for pid, title in RECORD_PRESET_ENTRIES:
             self._preset_combo.addItem(title, pid)
-        ig.addWidget(self._preset_combo, 7, 1)
-        ig.addWidget(QLabel("Custom"), 8, 0)
+        ig.addWidget(self._preset_combo, 9, 1)
+        ig.addWidget(QLabel("Custom"), 10, 0)
         self._custom_tpl = QLineEdit(DEFAULT_CUSTOM_TEMPLATES["cart"])
-        ig.addWidget(self._custom_tpl, 8, 1)
+        ig.addWidget(self._custom_tpl, 10, 1)
         ll.addWidget(io)
         ll.addStretch(1)
 
@@ -468,6 +506,16 @@ class MainWindow(QMainWindow):
         self._on_ch_count_changed()
         self._osc_bind_combo.currentIndexChanged.connect(self._on_osc_bind_changed)
         self._ctrl_port.valueChanged.connect(self._on_ctrl_port_changed)
+        self._osc_source_combo.currentIndexChanged.connect(self._on_osc_source_changed)
+        self._engine_host.editingFinished.connect(
+            lambda: self._settings.setValue(
+                "recorder/engine_host", self._engine_host.text().strip()
+            )
+        )
+        self._engine_port.valueChanged.connect(
+            lambda v: self._settings.setValue("recorder/engine_port", int(v))
+        )
+        self._apply_osc_source_ui()
         self._restart_control_server()
 
         self.setStyleSheet(APP_STYLESHEET)
@@ -615,6 +663,40 @@ class MainWindow(QMainWindow):
     def _on_ctrl_port_changed(self, _v: int) -> None:
         self._restart_control_server()
 
+    def _osc_source(self) -> str:
+        d = self._osc_source_combo.currentData()
+        return d if d in ("player", "engine") else "player"
+
+    def _on_osc_source_changed(self, _index: int) -> None:
+        self._settings.setValue("recorder/osc_source", self._osc_source())
+        self._apply_osc_source_ui()
+
+    def _apply_osc_source_ui(self) -> None:
+        """Engine-echo fields are live only in engine mode; the preset is then
+        fixed to ADM (the only thing the engine echo plane emits)."""
+        engine = self._osc_source() == "engine"
+        self._engine_host.setEnabled(engine)
+        self._engine_port.setEnabled(engine)
+        self._preset_combo.setEnabled(not engine)
+        self._custom_tpl.setEnabled(not engine)
+
+    def _abort_capture_with_error(self, log_msg: str, status_msg: str) -> None:
+        """Tear down a just-started capture + temp file after a startup failure."""
+        if self._capture is not None:
+            try:
+                self._capture.stop()
+            except Exception:
+                pass
+            self._capture = None
+        self._log_ui("ERROR", log_msg)
+        self._status.showMessage(status_msg, 8000)
+        if self._temp_wav is not None:
+            try:
+                self._temp_wav.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._temp_wav = None
+
     def _osc_control_record(self) -> None:
         if self._recording or self._osc_ctrl_record_pending:
             return
@@ -752,41 +834,72 @@ class MainWindow(QMainWindow):
             hz=int(self._osc_hz.value()),
         )
 
-        pid = self._preset_combo.currentData()
-        if not isinstance(pid, str):
-            pid = "adm"
-        router = OscIngestRouter(
-            pid,
-            lambda: self._capture.current_frame() if self._capture else 0,
-            on_xyz,
-            self._custom_pat() if pid == "custom" else None,
-            on_raw=self._on_osc_raw,
-        )
+        def get_frame() -> int:
+            return self._capture.current_frame() if self._capture else 0
+
         bind_h = self._osc_bind_host()
         in_port = int(self._osc_port.value())
-        try:
-            self._osc_srv, self._osc_thread = start_osc_server(bind_h, in_port, router)
-        except OSError as e:
-            self._capture.stop()
-            self._capture = None
-            self._log_ui(
-                "ERROR",
-                f"OSC position {bind_h}:{in_port} bind failed: {e}. "
-                "Another process may hold the port, or try the other UDP bind mode / another port.",
+
+        if self._osc_source() == "engine":
+            # The engine echo plane re-emits every source it sees (player, VST3,
+            # WebGUI, scene loads) as ADM-OSC — so the preset is fixed to ADM and
+            # 'OSC in' is the local port the engine echoes back to.
+            engine_host = self._engine_host.text().strip() or "127.0.0.1"
+            engine_port = int(self._engine_port.value())
+            self._settings.setValue("recorder/engine_host", engine_host)
+            try:
+                self._echo_session = start_engine_echo_ingest(
+                    bind_host=bind_h,
+                    listen_port=in_port,
+                    engine_host=engine_host,
+                    engine_port=engine_port,
+                    get_frame=get_frame,
+                    on_xyz=on_xyz,
+                    on_meta=self._timeline.add_meta,
+                    on_raw=self._on_osc_raw,
+                    preset="adm",
+                )
+            except OSError as e:
+                self._abort_capture_with_error(
+                    f"Engine echo: bind on {bind_h}:{in_port} failed: {e}. "
+                    "Free the port or pick another, or switch the UDP bind mode.",
+                    "Echo bind failed — see log",
+                )
+                return
+            self._osc_srv = self._echo_session.server
+            self._osc_thread = self._echo_session.thread
+            listen_log = (
+                f"Engine echo: listening on {bind_h}:{in_port}, subscribed to "
+                f"engine {engine_host}:{engine_port} (ADM preset; capturing all "
+                "engine sources)."
             )
-            self._status.showMessage("OSC bind failed — see log", 8000)
-            if self._temp_wav is not None:
-                try:
-                    self._temp_wav.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                self._temp_wav = None
-            return
+        else:
+            pid = self._preset_combo.currentData()
+            if not isinstance(pid, str):
+                pid = "adm"
+            router = OscIngestRouter(
+                pid,
+                get_frame,
+                on_xyz,
+                self._custom_pat() if pid == "custom" else None,
+                on_raw=self._on_osc_raw,
+                on_meta=self._timeline.add_meta,
+            )
+            try:
+                self._osc_srv, self._osc_thread = start_osc_server(bind_h, in_port, router)
+            except OSError as e:
+                self._abort_capture_with_error(
+                    f"OSC position {bind_h}:{in_port} bind failed: {e}. "
+                    "Another process may hold the port, or try the other UDP bind mode / another port.",
+                    "OSC bind failed — see log",
+                )
+                return
+            listen_log = f"OSC position listening on {bind_h}:{in_port} (send from 127.0.0.1 ok)."
 
         self._recording = True
         self._btn_rec.setEnabled(False)
         self._btn_stop.setEnabled(True)
-        self._log_ui("INFO", f"OSC position listening on {bind_h}:{in_port} (send from 127.0.0.1 ok).")
+        self._log_ui("INFO", listen_log)
         self._status.showMessage("Recording…", 0)
 
     def _stop_and_finalize(self) -> None:
@@ -797,6 +910,14 @@ class MainWindow(QMainWindow):
         self._capture = None
         if cap is not None:
             cap.stop()
+        if self._echo_session is not None:
+            # Stops the heartbeat thread *and* the ingest server it owns.
+            try:
+                self._echo_session.close()
+            except Exception:
+                pass
+            self._echo_session = None
+            self._osc_srv = None  # already torn down by the session
         if self._osc_srv is not None:
             try:
                 self._osc_srv.shutdown()

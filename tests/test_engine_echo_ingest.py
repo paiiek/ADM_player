@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 import unittest
 from typing import Any, Callable
+from unittest import mock
 
 from pythonosc import udp_client
 from pythonosc.dispatcher import Dispatcher
@@ -19,6 +20,7 @@ from adm_recorder.engine_echo import (
     ECHO_SUBSCRIBER_TAG,
     SCHEMA_VERSION,
     EngineEchoSubscriber,
+    start_engine_echo_ingest,
 )
 from adm_recorder.osc_ingest import OscIngestRouter, aed_deg_to_xyz, start_osc_server
 from adm_recorder.osc_udp_server import start_threading_osc_udp
@@ -125,6 +127,115 @@ class TestEngineEchoIngest(unittest.TestCase):
         self.assertTrue(_wait_until(lambda: ping_count["n"] >= 1))
         self.assertGreaterEqual(len(handshakes), 1)
         self.assertEqual(handshakes[0], listen_port)
+
+
+class TestEngineEchoSession(unittest.TestCase):
+    """``start_engine_echo_ingest`` — the one-call echo pipeline the GUI/CLI use."""
+
+    def _start_fake_engine(self, on_handshake: Callable[..., None]) -> tuple[int, dict]:
+        """Bind a fake engine: route ``/sys/handshake`` and count ``/hb/ping``."""
+        ping_count = {"n": 0}
+        d = Dispatcher()
+        d.map("/sys/handshake", on_handshake)
+        d.map("/hb/ping", lambda *_a: ping_count.__setitem__("n", ping_count["n"] + 1))
+        srv, _th = start_threading_osc_udp(("127.0.0.1", 0), d)
+        self.addCleanup(srv.shutdown)
+        return srv.server_address[1], ping_count
+
+    def test_ephemeral_listen_port_resolved_and_advertised(self) -> None:
+        timeline = TimelineStore()
+        handshakes: list[int] = []
+
+        def on_handshake(_addr: str, *args: Any) -> None:
+            # read reply_port by type index, like the engine CommandDecoder
+            ints = [a for a in args if isinstance(a, int) and not isinstance(a, bool)]
+            reply_port = int(ints[1])
+            handshakes.append(reply_port)
+            echo = udp_client.SimpleUDPClient("127.0.0.1", reply_port)
+            echo.send_message("/adm/obj/7/aed", [-45.0, 0.0, 1.0])
+            echo.send_message("/adm/obj/7/gain", 0.25)
+            echo.send_message("/adm/obj/7/width", 30.0)
+
+        engine_port, ping_count = self._start_fake_engine(on_handshake)
+
+        session = start_engine_echo_ingest(
+            bind_host="127.0.0.1",
+            listen_port=0,  # ephemeral — the OS picks the port
+            engine_host="127.0.0.1",
+            engine_port=engine_port,
+            get_frame=lambda: 42,
+            on_xyz=timeline.add_cartesian,
+            on_meta=timeline.add_meta,
+            heartbeat_sec=0.05,
+        )
+        self.addCleanup(session.close)
+
+        # the ephemeral port was resolved (non-zero) before subscribing
+        self.assertGreater(session.listen_port, 0)
+
+        self.assertTrue(
+            _wait_until(
+                lambda: timeline.snapshot() and len(timeline.snapshot_meta()) >= 2
+            ),
+            f"echo not ingested: pos={timeline.snapshot()} meta={timeline.snapshot_meta()}",
+        )
+        # …and that exact resolved port is what the engine was told to reply to
+        self.assertEqual(handshakes[0], session.listen_port)
+
+        pos = timeline.snapshot()
+        self.assertEqual(len(pos), 1)
+        self.assertEqual(pos[0].channel_1based, 7)
+        self.assertEqual(pos[0].frame, 42)
+        ex, ey, ez = aed_deg_to_xyz(-45.0, 0.0, 1.0)
+        self.assertAlmostEqual(pos[0].x, ex, places=5)
+        self.assertAlmostEqual(pos[0].y, ey, places=5)
+        self.assertAlmostEqual(pos[0].z, ez, places=5)
+
+        meta = {m.kind: m.value for m in timeline.snapshot_meta()}
+        self.assertAlmostEqual(meta["gain"], 0.25, places=5)
+        self.assertAlmostEqual(meta["width"], 30.0, places=5)
+
+        self.assertTrue(_wait_until(lambda: ping_count["n"] >= 1))
+
+        # close() tears down the server and is idempotent
+        session.close()
+        self.assertIsNone(session.server)
+        session.close()
+
+    def test_subscribe_failure_tears_down_ingest_socket(self) -> None:
+        """If the handshake send fails, the just-bound ingest socket is closed."""
+        closed = {"shutdown": 0, "server_close": 0}
+
+        class _FakeServer:
+            server_address = ("127.0.0.1", 5555)
+
+            def shutdown(self) -> None:
+                closed["shutdown"] += 1
+
+            def server_close(self) -> None:
+                closed["server_close"] += 1
+
+        def boom(_addr: str, _val: Any) -> None:
+            raise RuntimeError("handshake send blew up")
+
+        with mock.patch(
+            "adm_recorder.engine_echo.start_osc_server",
+            return_value=(_FakeServer(), None),
+        ):
+            with self.assertRaises(RuntimeError):
+                start_engine_echo_ingest(
+                    bind_host="127.0.0.1",
+                    listen_port=5555,
+                    engine_host="127.0.0.1",
+                    engine_port=9100,
+                    get_frame=lambda: 0,
+                    on_xyz=lambda *_a: None,
+                    on_send=boom,
+                )
+
+        # the half-open ingest socket must be reclaimed, not leaked
+        self.assertEqual(closed["shutdown"], 1)
+        self.assertEqual(closed["server_close"], 1)
 
 
 if __name__ == "__main__":
