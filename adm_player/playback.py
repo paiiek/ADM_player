@@ -5,14 +5,40 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TextIO
+from typing import Protocol, TextIO
 
 import numpy as np
-import sounddevice as sd
 import soundfile as sf
 
 from .adm_model import AdmObject, active_block
 from .osc_emit import AdmOscEmitter
+
+
+def _sd():
+    """Lazy `sounddevice` import.
+
+    sounddevice loads PortAudio at import; on a headless host that has no
+    PortAudio the import raises. The ipc (`--sink ipc://`) path never touches a
+    device, so importing sounddevice eagerly would needlessly break headless
+    runs (ADR 0019 PR5 PM10 / AC-11). Only the device path calls this.
+    """
+    import sounddevice as sd  # noqa: PLC0415
+
+    return sd
+
+
+class AudioSink(Protocol):
+    """The minimal sink contract the playback loop drives.
+
+    Both the default `sd.OutputStream` and `IpcRingSink` satisfy it: a
+    `.write(np.ndarray)` plus the context-manager protocol.
+    """
+
+    def write(self, data: np.ndarray) -> None: ...
+
+    def __enter__(self) -> AudioSink: ...
+
+    def __exit__(self, *exc: object) -> object: ...
 
 
 class OscPlaybackRef:
@@ -88,6 +114,7 @@ def coerce_audio_device(device: int | str | None) -> int | str | None:
 def _output_device_id(device: int | str | None) -> int | str:
     if device is not None:
         return device
+    sd = _sd()
     # sounddevice uses _InputOutputPair: supports default[1] / ['output'], not len().
     try:
         out_idx = sd.default.device[1]
@@ -99,6 +126,7 @@ def _output_device_id(device: int | str | None) -> int | str:
 
 
 def max_output_channels(device: int | str | None) -> int:
+    sd = _sd()
     dev = _output_device_id(device)
     info = sd.query_devices(dev, "output")
     n = int(info.get("max_output_channels") or 0)
@@ -107,6 +135,7 @@ def max_output_channels(device: int | str | None) -> int:
 
 def print_output_audio_devices(stream: TextIO | None = None) -> None:
     """PortAudio 출력 가능 장치 목록을 인덱스와 함께 stdout에 씁니다."""
+    sd = _sd()
     out = stream or sys.stdout
     try:
         default_out = sd.default.device[1]
@@ -165,6 +194,7 @@ def play_adm_wav(
     quiet_truncation: bool = False,
     progress_emit_interval_s: float | None = None,
     levels_emit_interval_s: float | None = None,
+    sink: AudioSink | None = None,
 ) -> None:
     """
     on_progress: (현재 프레임 위치, 총 프레임 수, samplerate) 블록마다 호출.
@@ -176,15 +206,46 @@ def play_adm_wav(
     quiet_truncation: True 이면 채널 잘림 안내를 stderr에 찍지 않음(인터랙티브 UI용).
     progress_emit_interval_s / levels_emit_interval_s: None이면 블록마다 콜백.
         양수(초)이면 해당 간격으로만 호출(GUI 등 Qt 시그널 부하 완화용).
+    sink: 제공되면(예: IpcRingSink) 오디오 장치 대신 이 sink 로 출력하며, 장치 질의/채널
+        잘림 로직을 전혀 거치지 않고 파일의 **모든** 채널을 sink.write() 로 보낸다
+        (ADR 0019 PR5 `--sink ipc://`, headless). None 이면 기존 sd.OutputStream 경로.
     """
-    device = coerce_audio_device(device)
     path = Path(path)
     with sf.SoundFile(str(path)) as f:
         sr = int(f.samplerate)
         file_ch = f.channels
         total_frames = int(f.frames)
-        out_ch, _ = resolve_playback_channels(file_ch, out_channels, device)
-        cap = max_output_channels(device)
+
+        if sink is not None:
+            # ipc / injected-sink path: bypass ALL device logic (no
+            # sd.query_devices / _output_device_id / resolve_playback_channels /
+            # max_output_channels) and write ALL file channels (PM10 / AC-11).
+            write_ch = file_ch
+            with sink as active_sink:
+                _run_playback_loop(
+                    f=f,
+                    sink=active_sink,
+                    sr=sr,
+                    write_ch=write_ch,
+                    objects=objects,
+                    osc=osc,
+                    block_frames=block_frames,
+                    total_frames=total_frames,
+                    stop_event=stop_event,
+                    pause_event=pause_event,
+                    start_frame=start_frame,
+                    on_progress=on_progress,
+                    on_levels=on_levels,
+                    channel_mix=channel_mix,
+                    progress_emit_interval_s=progress_emit_interval_s,
+                    levels_emit_interval_s=levels_emit_interval_s,
+                )
+            return
+
+        # Default device path: resolve + (possibly) truncate channels.
+        device_norm = coerce_audio_device(device)
+        out_ch, _ = resolve_playback_channels(file_ch, out_channels, device_norm)
+        cap = max_output_channels(device_norm)
         if not quiet_truncation and out_ch < file_ch:
             extra = (
                 f"출력 장치 최대 {cap}채널이라 앞쪽만 재생합니다. "
@@ -196,18 +257,8 @@ def play_adm_wav(
                 f"참고: 파일 {file_ch}채널 → {out_ch}채널만 재생. {extra}",
                 file=sys.stderr,
             )
-        dev_id = _output_device_id(device)
-        if start_frame < 0:
-            start_frame = 0
-        if start_frame > total_frames:
-            start_frame = total_frames
-        if start_frame > 0:
-            f.seek(start_frame)
-        pos = start_frame
-        last_progress_t = 0.0
-        last_levels_t = 0.0
-        prog_iv = progress_emit_interval_s
-        lev_iv = levels_emit_interval_s
+        dev_id = _output_device_id(device_norm)
+        sd = _sd()
         with sd.OutputStream(
             device=dev_id,
             samplerate=sr,
@@ -215,46 +266,102 @@ def play_adm_wav(
             dtype="float32",
             blocksize=block_frames,
         ) as stream:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                while pause_event is not None and pause_event.is_set():
-                    time.sleep(0.02)
-                    if stop_event is not None and stop_event.is_set():
-                        break
-                if stop_event is not None and stop_event.is_set():
-                    break
-                data = f.read(block_frames, dtype="float32", always_2d=True)
-                if data.size == 0:
-                    break
-                frames = data.shape[0]
-                data = np.asarray(data, dtype=np.float32, order="C")
-                if channel_mix is not None and data.shape[1] > 0:
-                    gains = channel_mix.snapshot_gains(data.shape[1])
-                    data = data * gains
-                if on_levels is not None and data.shape[1] > 0:
-                    now_mono = time.monotonic()
-                    emit_levels = lev_iv is None or (now_mono - last_levels_t) >= lev_iv
-                    if emit_levels:
-                        peak = np.max(np.abs(data), axis=0)
-                        on_levels([float(x) for x in peak.tolist()])
-                        if lev_iv is not None:
-                            last_levels_t = now_mono
-                if data.shape[1] > out_ch:
-                    data = data[:, :out_ch].copy()
-                t0 = pos / sr
-                emitter = _osc_for_audio_block(osc)
-                if emitter is not None:
-                    for obj in objects:
-                        blk = active_block(obj.blocks, t0)
-                        emitter.send_object_position(obj, blk)
-                if on_progress is not None:
-                    now_mono = time.monotonic()
-                    if prog_iv is None or (now_mono - last_progress_t) >= prog_iv:
-                        on_progress(pos, total_frames, sr)
-                        if prog_iv is not None:
-                            last_progress_t = now_mono
-                stream.write(data)
-                pos += frames
-            if on_progress is not None:
+            _run_playback_loop(
+                f=f,
+                sink=stream,
+                sr=sr,
+                write_ch=out_ch,
+                objects=objects,
+                osc=osc,
+                block_frames=block_frames,
+                total_frames=total_frames,
+                stop_event=stop_event,
+                pause_event=pause_event,
+                start_frame=start_frame,
+                on_progress=on_progress,
+                on_levels=on_levels,
+                channel_mix=channel_mix,
+                progress_emit_interval_s=progress_emit_interval_s,
+                levels_emit_interval_s=levels_emit_interval_s,
+            )
+
+
+def _run_playback_loop(
+    *,
+    f: sf.SoundFile,
+    sink: AudioSink,
+    sr: int,
+    write_ch: int,
+    objects: list[AdmObject],
+    osc: AdmOscEmitter | OscPlaybackRef | None,
+    block_frames: int,
+    total_frames: int,
+    stop_event: threading.Event | None,
+    pause_event: threading.Event | None,
+    start_frame: int,
+    on_progress: Callable[[int, int, int], None] | None,
+    on_levels: Callable[[list[float]], None] | None,
+    channel_mix: ChannelMixState | None,
+    progress_emit_interval_s: float | None,
+    levels_emit_interval_s: float | None,
+) -> None:
+    """Shared read → OSC-emit → sink.write loop for both the device and ipc sinks.
+
+    `sink` is already an open context (the caller `with`-opened it). `write_ch`
+    is the number of leading channels written: the file channel count for the
+    ipc path (no truncation), the device channel cap for the device path.
+    """
+    if start_frame < 0:
+        start_frame = 0
+    if start_frame > total_frames:
+        start_frame = total_frames
+    if start_frame > 0:
+        f.seek(start_frame)
+    pos = start_frame
+    last_progress_t = 0.0
+    last_levels_t = 0.0
+    prog_iv = progress_emit_interval_s
+    lev_iv = levels_emit_interval_s
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            break
+        while pause_event is not None and pause_event.is_set():
+            time.sleep(0.02)
+            if stop_event is not None and stop_event.is_set():
+                break
+        if stop_event is not None and stop_event.is_set():
+            break
+        data = f.read(block_frames, dtype="float32", always_2d=True)
+        if data.size == 0:
+            break
+        frames = data.shape[0]
+        data = np.asarray(data, dtype=np.float32, order="C")
+        if channel_mix is not None and data.shape[1] > 0:
+            gains = channel_mix.snapshot_gains(data.shape[1])
+            data = data * gains
+        if on_levels is not None and data.shape[1] > 0:
+            now_mono = time.monotonic()
+            emit_levels = lev_iv is None or (now_mono - last_levels_t) >= lev_iv
+            if emit_levels:
+                peak = np.max(np.abs(data), axis=0)
+                on_levels([float(x) for x in peak.tolist()])
+                if lev_iv is not None:
+                    last_levels_t = now_mono
+        if data.shape[1] > write_ch:
+            data = data[:, :write_ch].copy()
+        t0 = pos / sr
+        emitter = _osc_for_audio_block(osc)
+        if emitter is not None:
+            for obj in objects:
+                blk = active_block(obj.blocks, t0)
+                emitter.send_object_position(obj, blk)
+        if on_progress is not None:
+            now_mono = time.monotonic()
+            if prog_iv is None or (now_mono - last_progress_t) >= prog_iv:
                 on_progress(pos, total_frames, sr)
+                if prog_iv is not None:
+                    last_progress_t = now_mono
+        sink.write(data)
+        pos += frames
+    if on_progress is not None:
+        on_progress(pos, total_frames, sr)

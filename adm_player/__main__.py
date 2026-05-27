@@ -39,6 +39,30 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--flip-azimuth", action="store_true", help="방위각 부호 반전")
     p.add_argument("--block-frames", type=int, default=512, help="오디오/OSC 블록 프레임 수")
     p.add_argument(
+        "--sink",
+        default=None,
+        metavar="ipc://NAME",
+        help=(
+            "오디오 장치 대신 공유메모리 ring 으로 출력 (ADR 0019 shm IPC, headless). "
+            "형식 ipc://NAME (POSIX shm 이름). 엔진은 --input-backend shm:/NAME 으로 짝을 맞춘다. "
+            "--audio-device/--interactive/--list-audio-devices/--out-channels 와 함께 쓸 수 없다."
+        ),
+    )
+    p.add_argument(
+        "--block-size",
+        type=int,
+        default=256,
+        metavar="N",
+        help="--sink ipc:// 사용 시 shm ring 의 wire block_size (엔진 콜백 블록의 약수여야 함).",
+    )
+    p.add_argument(
+        "--ring-frames",
+        type=int,
+        default=8192,
+        metavar="N",
+        help="--sink ipc:// 사용 시 ring 용량(프레임). 2의 거듭제곱이 아니면 다음 2^n 으로 패딩한다.",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="오디오 출력 없이 axml/chna 파싱 결과만 표시",
@@ -84,6 +108,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
     args.audio_device = coerce_audio_device(args.audio_device)
+
+    sink_name: str | None = None
+    if args.sink is not None:
+        if not args.sink.startswith("ipc://"):
+            p.error("--sink 는 ipc://NAME 형식이어야 합니다 (예: --sink ipc://spe-session-1).")
+        sink_name = args.sink[len("ipc://") :]
+        if not sink_name:
+            p.error("--sink ipc:// 뒤에 shm 이름이 필요합니다 (예: --sink ipc://spe-session-1).")
+        if args.audio_device is not None:
+            p.error("--sink ipc:// 와 --audio-device 는 함께 사용할 수 없습니다.")
+        if args.interactive:
+            p.error("--sink ipc:// 와 --interactive 는 함께 사용할 수 없습니다.")
+        if args.list_audio_devices:
+            p.error("--sink ipc:// 와 --list-audio-devices 는 함께 사용할 수 없습니다.")
+        if args.out_channels is not None:
+            p.error("--sink ipc:// 와 --out-channels 는 함께 사용할 수 없습니다.")
 
     if args.list_audio_devices:
         print("출력용 오디오 장치 (--audio-device 에 정수 인덱스로 지정):", flush=True)
@@ -207,14 +247,34 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if sync is not None:
                 sync.send_transport_play()
-            play_adm_wav(
-                wav_path,
-                objects,
-                osc=osc,
-                block_frames=args.block_frames,
-                out_channels=args.out_channels,
-                device=args.audio_device,
-            )
+            if sink_name is not None:
+                # shm IPC path: build IpcRingSink writing ALL file channels at
+                # the --block-size granularity; bypass all device logic (PM10).
+                from .ipc_sink import IpcRingSink
+
+                ipc_sink = IpcRingSink(
+                    sink_name,
+                    sample_rate=int(sample_rate),
+                    channels=n_ch,
+                    block_size=args.block_size,
+                    ring_frames=args.ring_frames,
+                )
+                play_adm_wav(
+                    wav_path,
+                    objects,
+                    osc=osc,
+                    block_frames=args.block_size,
+                    sink=ipc_sink,
+                )
+            else:
+                play_adm_wav(
+                    wav_path,
+                    objects,
+                    osc=osc,
+                    block_frames=args.block_frames,
+                    out_channels=args.out_channels,
+                    device=args.audio_device,
+                )
             if sync is not None:
                 sync.send_transport_stop()
         except KeyboardInterrupt:
