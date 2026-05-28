@@ -480,6 +480,10 @@ def main() -> int:
             return self._pause.is_set()
 
         def run(self) -> None:
+            # play_adm_wav no longer raises on output-device unplug (Patch 1);
+            # it surfaces the cause through on_error. We forward both routes
+            # (legacy raise + new callback) into the same `failed` signal so
+            # the GUI handler stays simple.
             try:
                 play_adm_wav(
                     self._wav_path,
@@ -497,6 +501,7 @@ def main() -> int:
                     quiet_truncation=True,
                     progress_emit_interval_s=0.05,
                     levels_emit_interval_s=0.05,
+                    on_error=lambda msg: self.failed.emit(msg),
                 )
             except Exception as e:
                 self.failed.emit(str(e))

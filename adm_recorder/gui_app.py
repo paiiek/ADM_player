@@ -150,6 +150,15 @@ class _LevelsBridge(QObject):
     peaks = Signal(list)
 
 
+class _CaptureErrorBridge(QObject):
+    """Marshals a write/device failure from the PortAudio callback thread to
+    the GUI thread. ``error.emit(msg)`` called from any thread is delivered
+    via Qt.AutoConnection → QueuedConnection (the bridge lives on the main
+    thread)."""
+
+    error = Signal(str)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -160,6 +169,7 @@ class MainWindow(QMainWindow):
         self._cmap = ChannelMapState()
         self._timeline = TimelineStore()
         self._recording = False
+        self._capture_failed = False  # latches after a capture-thread write error
         self._capture: AudioCapture | None = None
         self._osc_srv = None
         self._osc_thread = None
@@ -169,6 +179,10 @@ class MainWindow(QMainWindow):
         self._osc_log_bridge = _OscLogBridge()
         self._osc_log_bridge.line.connect(self._append_osc_log)
         self._levels_bridge = _LevelsBridge()
+        # Capture errors arrive on the PortAudio thread; the bridge re-emits
+        # them on the GUI thread (Qt.AutoConnection across threads → queued).
+        self._capture_err_bridge = _CaptureErrorBridge()
+        self._capture_err_bridge.error.connect(self._on_capture_error)
         self._ctrl_bridge = OscControlBridge()
         self._ctrl_srv = None
         self._ctrl_thread = None
@@ -541,13 +555,37 @@ class MainWindow(QMainWindow):
         self._sync_map_summary()
 
     def _tick_ui(self) -> None:
-        if self._recording and self._capture is not None:
+        if self._recording and self._capture is not None and not self._capture_failed:
             fr = self._capture.current_frame()
             sr = max(1, self._sr)
             t = fr / float(sr)
             self._rec_time_lbl.setText(self._fmt_rec_time(t))
+        elif self._capture_failed:
+            # Hold the last shown time so the operator can see how much was captured
+            # before the device/disk fault. No new frames are landing.
+            pass
         else:
             self._rec_time_lbl.setText("00:00:00.00")
+
+    def _on_capture_error(self, msg: str) -> None:
+        """Slot for ``_capture_err_bridge.error`` — runs on the GUI thread.
+
+        The PortAudio callback latched the failure (no more frames will be
+        written). Surface it loudly, freeze the timer, and trigger the normal
+        stop-and-save path so any frames captured before the fault still reach
+        the BWF master.
+        """
+        if self._capture_failed:
+            return  # already handled — multiple write failures coalesce into one banner
+        self._capture_failed = True
+        self._log_ui("ERROR", f"Audio capture failed: {msg}")
+        self._status.showMessage(f"Capture failed — {msg}", 0)
+        # Red-tint the recording-time label as a visual banner.
+        self._rec_time_lbl.setStyleSheet(
+            "color: white; background-color: #b03030; padding: 2px 6px; border-radius: 3px;"
+        )
+        if self._recording:
+            QTimer.singleShot(0, self._stop_and_finalize)
 
     def _fmt_rec_time(self, seconds: float) -> str:
         if seconds < 0:
@@ -814,6 +852,7 @@ class MainWindow(QMainWindow):
                 self._temp_wav,
                 self._route,
                 on_levels=on_levels,
+                on_capture_error=self._capture_err_bridge.error.emit,
             )
             self._capture.start()
         except Exception as e:
@@ -897,6 +936,8 @@ class MainWindow(QMainWindow):
             listen_log = f"OSC position listening on {bind_h}:{in_port} (send from 127.0.0.1 ok)."
 
         self._recording = True
+        self._capture_failed = False  # fresh start clears any prior error state
+        self._rec_time_lbl.setStyleSheet("")  # clear red-on-error styling
         self._btn_rec.setEnabled(False)
         self._btn_stop.setEnabled(True)
         self._log_ui("INFO", listen_log)
