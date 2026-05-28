@@ -358,3 +358,109 @@ def test_bw64_reader_handles_chunk_size_override_table(tmp_path: Path) -> None:
     assert chunks["fmt "] == fmt_body
     assert chunks["data"] == data_payload
     assert chunks["axml"] == axml_payload
+
+
+# ── Patch 3: self-verify + chna×WAV channel validation ──────────────────────
+
+def test_embed_self_verify_catches_truncation(tmp_path: Path, monkeypatch) -> None:
+    """If the file goes shorter than the planner predicted (disk full, partial
+    write), the self-verify must raise AFTER the close handshake so the operator
+    never sees a half-written master masquerading as a real recording."""
+    from adm_recorder import bwf_atmos_writer as bwm
+
+    src = tmp_path / "in.wav"
+    dst = tmp_path / "out.wav"
+    _write_synthetic_float_wav(src, n_frames=2048, n_ch=2)
+
+    # Patch _self_verify_written_bwf to receive a layout where size is ONE byte
+    # larger than reality — emulates a truncated PCM tail without actually
+    # corrupting the writer path.
+    orig = bwm._self_verify_written_bwf
+
+    def lying_verify(dst_wav, *, layout):
+        bumped = dict(layout)
+        bumped["riff_chunk_size"] = layout["riff_chunk_size"] + 1
+        orig(dst_wav, layout=bumped)
+
+    monkeypatch.setattr(bwm, "_self_verify_written_bwf", lying_verify)
+    with pytest.raises(RuntimeError, match="self-verify"):
+        bwm.embed_axml_chna_into_wav(src, dst, "<x/>", b"\x00\x00\x00\x00")
+    # And the corrupt file must have been unlinked.
+    assert not dst.exists(), "self-verify failed but dst was not unlinked"
+
+
+def test_embed_self_verify_catches_wrong_magic(tmp_path: Path, monkeypatch) -> None:
+    """A layout claiming need_bw64=True against a RIFF-written file must trip
+    self-verify (regression guard for the BW64 emission path)."""
+    from adm_recorder import bwf_atmos_writer as bwm
+
+    src = tmp_path / "in.wav"
+    dst = tmp_path / "out.wav"
+    _write_synthetic_float_wav(src, n_frames=512, n_ch=2)
+
+    orig = bwm._self_verify_written_bwf
+
+    def lying_verify(dst_wav, *, layout):
+        # The actual file is RIFF (small payload). Force layout to claim BW64 to
+        # exercise the magic-mismatch branch.
+        bumped = dict(layout)
+        bumped["need_bw64"] = True
+        orig(dst_wav, layout=bumped)
+
+    monkeypatch.setattr(bwm, "_self_verify_written_bwf", lying_verify)
+    with pytest.raises(RuntimeError, match="requires BW64"):
+        bwm.embed_axml_chna_into_wav(src, dst, "<x/>", b"\x00\x00\x00\x00")
+    assert not dst.exists()
+
+
+def test_finalize_rejects_chna_channel_mismatch(tmp_path: Path) -> None:
+    """If the temp WAV channel count doesn't match cmap.roles, chna would point
+    at the wrong tracks — finalize must refuse rather than write a misaligned
+    master."""
+    from adm_recorder.bwf_atmos_writer import finalize_bwf_session
+    from adm_recorder.channel_config import ChannelMapState, ChannelRole
+
+    src = tmp_path / "rec_temp.wav"
+    _write_synthetic_float_wav(src, n_frames=2048, n_ch=2)  # 2 channels
+    dst = tmp_path / "master.wav"
+
+    # cmap claims 4 channels — chna would have 4 rows pointing at tracks 1..4
+    # but the WAV only has 2.
+    cm = ChannelMapState(n_channels=4)
+    cm.bed_layout_id = "stereo"
+    cm.roles = [ChannelRole.BED, ChannelRole.BED, ChannelRole.OBJECT, ChannelRole.OBJECT]
+
+    with pytest.raises(ValueError, match="chna would point at the wrong tracks"):
+        finalize_bwf_session(
+            temp_wav=src,
+            out_bwf=dst,
+            cmap=cm,
+            blocks_per_object={},
+            total_frames=2048,
+            sample_rate=48000.0,
+        )
+    assert not dst.exists(), "finalize raised but a master was written anyway"
+
+
+def test_finalize_accepts_matching_channels(tmp_path: Path) -> None:
+    """Sanity: the new chna validation must not break the happy path."""
+    from adm_recorder.bwf_atmos_writer import finalize_bwf_session
+    from adm_recorder.channel_config import ChannelMapState, ChannelRole
+
+    src = tmp_path / "rec_temp.wav"
+    _write_synthetic_float_wav(src, n_frames=2048, n_ch=3)
+    dst = tmp_path / "master.wav"
+
+    cm = ChannelMapState(n_channels=3)
+    cm.bed_layout_id = "stereo"
+    cm.roles = [ChannelRole.BED, ChannelRole.BED, ChannelRole.OBJECT]
+
+    finalize_bwf_session(
+        temp_wav=src,
+        out_bwf=dst,
+        cmap=cm,
+        blocks_per_object={3: [(0, 2048, -0.1, 0.5, 0.1)]},
+        total_frames=2048,
+        sample_rate=48000.0,
+    )
+    assert dst.is_file() and dst.stat().st_size > 0

@@ -292,6 +292,56 @@ def embed_axml_chna_into_wav(src_wav: Path, dst_wav: Path, axml: str, chna: byte
         if dbmd:
             _write_chunk(f, b"dbmd", dbmd)
 
+    # Self-verify the written file: catches truncated writes (disk full mid-write
+    # close), wrong magic (ds64 emission regression), or layout planner drift.
+    # Cheap: stat + 12-byte head read, no PCM scan.
+    _self_verify_written_bwf(dst_wav, layout=layout)
+
+
+def _self_verify_written_bwf(dst_wav: Path, *, layout: dict) -> None:
+    """Structural read-back of the just-written BWF.
+
+    Raises ``RuntimeError`` after unlinking ``dst_wav`` if any of:
+      - file size doesn't match the pre-computed layout (truncation / disk-full),
+      - missing ``WAVE`` marker,
+      - magic disagrees with the BW64 decision (e.g. need_bw64 but wrote RIFF).
+    """
+    expected_size = 8 + layout["riff_chunk_size"]
+    try:
+        actual_size = dst_wav.stat().st_size
+        with dst_wav.open("rb") as f:
+            head = f.read(12)
+        if actual_size != expected_size:
+            raise RuntimeError(
+                f"BWF self-verify: file size {actual_size} != predicted {expected_size} "
+                f"({dst_wav}) — truncated write?"
+            )
+        if len(head) < 12 or head[8:12] != b"WAVE":
+            raise RuntimeError(
+                f"BWF self-verify: missing 'WAVE' marker in {dst_wav}"
+            )
+        magic = head[:4]
+        if layout["need_bw64"]:
+            if magic != b"BW64":
+                raise RuntimeError(
+                    f"BWF self-verify: layout requires BW64 but wrote {magic!r} "
+                    f"({dst_wav})"
+                )
+        else:
+            if magic != b"RIFF":
+                raise RuntimeError(
+                    f"BWF self-verify: layout requires RIFF but wrote {magic!r} "
+                    f"({dst_wav})"
+                )
+    except RuntimeError:
+        # Unlink the bad file so we don't leave a half-written master masquerading
+        # as a real recording — finalize_bwf_session's caller can retry.
+        try:
+            dst_wav.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
 
 def _sub(parent: ET.Element, tag: str, text: str | None = None, **attrib: str) -> ET.Element:
     el = ET.SubElement(parent, tag, attrib)
@@ -636,6 +686,17 @@ def finalize_bwf_session(
 ) -> None:
     bed_asg = cmap.bed_assignments_ordered()
     roles = cmap.roles
+    # chna track index ↔ WAV interleave 채널 1-based 매핑이 깨지지 않도록 사전 검증.
+    # roles 수가 temp WAV의 채널 수와 다르면 한 쪽이 다른 쪽을 잘못 해석하게 되고,
+    # 그 결과 axml/chna가 실제 PCM 트랙과 어긋난 master가 만들어진다 — 운영자가 채널
+    # 매핑을 바꾼 직후 record를 잊었거나, GUI에서 n_channels 변경이 누락된 경우.
+    info = sf.info(str(temp_wav))
+    if int(info.channels) != len(roles):
+        raise ValueError(
+            f"BWF finalize: temp WAV has {info.channels} channels but the channel "
+            f"map declares {len(roles)} roles — chna would point at the wrong tracks. "
+            "Re-record after fixing the channel count."
+        )
     axml, chna = build_axml_ebu(
         channel_roles=roles,
         bed_assignments=bed_asg,
