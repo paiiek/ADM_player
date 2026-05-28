@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=61", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "adm-player"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Play ADM BWF and stream object metadata via ADM-OSC"
 requires-python = ">=3.10"
 dependencies = [
@@ -30,3 +30,9 @@ include = ["adm_player*", "adm_recorder*"]
 
 [tool.setuptools.package-data]
 adm_player = ["resources/LOGO_White.png"]
+
+# Version is derived from git tags via setuptools_scm. If the working tree is
+# not a git checkout (e.g. a downloaded tarball, or `pip install` from a zip),
+# the fallback below keeps imports working without a hard build failure.
+[tool.setuptools_scm]
+fallback_version = "0.0.0+local"

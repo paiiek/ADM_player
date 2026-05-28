@@ -118,6 +118,68 @@ stream into a single Nuendo/Pro Tools-compatible ADM BWF master:
 
 The recorder accepts the same preset OSC sources as the player can emit.
 
+### Recorder Quick Start
+
+A typical session takes five steps after `pip install -e .[gui]`:
+
+1. **Pick the audio input device** (Audio → device dropdown). The channel
+   count spinner sets how many WAV channels are captured; the input matrix
+   maps device channels → WAV channels.
+2. **Choose the bed layout** (Bed → 5.1 / 7.1 / 7.1.2 / 7.1.4). The first
+   N channels become bed (per the layout's speaker count); the rest stream
+   as ADM objects.
+3. **Confirm OSC ports** — *OSC in* is where positions arrive, *OSC ctrl*
+   accepts `/record` and `/stop` from external automation. Must be
+   different ports. Bind to `127.0.0.1` unless you need LAN reach.
+4. **Set the save path** (Output). The actual file gets a numeric suffix
+   if the target already exists, so re-recording never overwrites.
+5. **Record / Stop & Save**. On stop, the temp WAV is wrapped with axml +
+   chna into a single Dolby/Nuendo-compatible BWF master. An empty
+   capture (no audio frames arrived) is detected and dropped instead of
+   leaving a 0-byte master.
+
+The recording-time label turns **red** when the capture thread surfaces a
+write failure (disk full, input device unplugged). The recorder auto-stops
+so any frames captured before the fault still reach the master.
+
+### Debugging OSC traffic
+
+Each preset can be probed with a tiny in-process OSC dumper — no recorder
+required, no spatial_engine required:
+
+```bash
+# Quick UDP dumper that prints every OSC message it sees.
+python - <<'PY'
+from pythonosc.dispatcher import Dispatcher
+from pythonosc.osc_server import BlockingOSCUDPServer
+d = Dispatcher()
+d.set_default_handler(lambda addr, *args: print(addr, args))
+BlockingOSCUDPServer(("127.0.0.1", 9100), d).serve_forever()
+PY
+```
+
+Pair with the player on a second terminal:
+
+```bash
+adm-player path/to/master.wav --osc-host 127.0.0.1 --osc-port 9100 \
+                              --osc-preset adm
+```
+
+The dumper prints lines like `/adm/obj/3/aed (12.5, 7.0, 0.3)`. Swap the
+port to match the preset's default (e.g. `9000` for L-ISA, `9877` for
+Soundscape), or override with `--osc-port` on the player.
+
+### Audio troubleshooting
+
+| Symptom                                  | Likely cause                                      | Fix                                                                             |
+|------------------------------------------|---------------------------------------------------|---------------------------------------------------------------------------------|
+| **Input device not appearing**           | PortAudio enumerated before the device was ready  | Click Audio → Refresh; on Linux check `pactl list short sources`                |
+| **Recording stops, label turns red**     | Disk full, device unplugged, or write error       | Check log panel (Audio capture failed: …). Master was auto-saved with the frames captured so far. |
+| **`No 'axml' chunk in WAVE file`**       | Source isn't an ADM master                        | `adm-player file.wav --dry-run` to confirm chunks; only ADM-tagged BWFs play    |
+| **`BW64/RF64 file is missing a 'ds64' chunk`** | Reader hit a >4 GiB file written without ds64 | The writer always emits ds64 above 4 GiB. If a third-party file fails, it's a non-conforming master. |
+| **`chna would point at the wrong tracks`** | Channel count was changed mid-session             | Stop, set the channel count + matrix, restart Record                            |
+| **Empty save (`Empty recording — not saved`)** | Record-Stop fired before any audio arrived       | Confirm the input device is selected and unmuted; check overflow counter        |
+
 ## Tests
 
 ```bash
