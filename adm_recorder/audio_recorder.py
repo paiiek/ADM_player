@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +13,7 @@ import soundfile as sf
 _log = logging.getLogger(__name__)
 
 LevelsCallback = Callable[[list[float]], None]
+CaptureErrorCallback = Callable[[str], None]
 
 
 class AudioCapture:
@@ -27,6 +29,7 @@ class AudioCapture:
         route: np.ndarray,
         *,
         on_levels: LevelsCallback | None = None,
+        on_capture_error: CaptureErrorCallback | None = None,
     ) -> None:
         self.device = device
         self.samplerate = int(samplerate)
@@ -40,6 +43,9 @@ class AudioCapture:
                 f"({self.device_channels}, {self.channels})"
             )
         self._on_levels = on_levels
+        # PortAudio invokes this from the capture thread; the GUI must marshal
+        # to its event loop (Qt queued signal) to stay thread-safe.
+        self._on_capture_error = on_capture_error
         self._lock = threading.Lock()
         self._frames_done = 0
         self._overflow_count = 0
@@ -87,12 +93,18 @@ class AudioCapture:
             peaks = np.max(np.abs(out), axis=0).astype(float).tolist()
             try:
                 self._on_levels(peaks)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 — levels are best-effort UI
+                # Don't silently swallow: a broken levels sink (Qt slot raised,
+                # closed widget, etc.) is worth a log line, but it must not
+                # break capture itself.
+                _log.warning("on_levels callback raised: %s", exc)
         if self._sf is None:
             return
         try:
             self._sf.write(np.asarray(out, copy=True))
+            # Per-block flush bounds silent loss on crash to ~1 block. The
+            # OS page cache still buffers; stop() pairs this with os.fsync().
+            self._sf.flush()
         except Exception as exc:  # noqa: BLE001 — never let the audio callback die silently
             # A raise here would tear down the PortAudio stream with no trace,
             # leaving a truncated file. Latch the error so stop()/callers can
@@ -100,7 +112,14 @@ class AudioCapture:
             with self._lock:
                 self._write_errors += 1
                 self._last_error = f"{type(exc).__name__}: {exc}"
+                err_msg = self._last_error
             _log.error("audio capture write failed: %s", exc)
+            cb = self._on_capture_error
+            if cb is not None:
+                try:
+                    cb(err_msg)
+                except Exception as cb_exc:  # noqa: BLE001 — keep capture alive
+                    _log.warning("on_capture_error callback raised: %s", cb_exc)
             return
         with self._lock:
             self._frames_done += int(frames)
@@ -133,12 +152,27 @@ class AudioCapture:
             try:
                 self._stream.stop()
                 self._stream.close()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 — must always release
+                _log.warning("audio capture stream close failed: %s", exc)
             self._stream = None
         if self._sf is not None:
             try:
+                self._sf.flush()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("audio capture flush failed: %s", exc)
+            try:
                 self._sf.close()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("audio capture close failed: %s", exc)
             self._sf = None
+            # Push the WAV out of the OS page cache so SIGKILL / power loss
+            # after stop() doesn't strand the last blocks. Best-effort: an
+            # unwritable / missing path just logs.
+            try:
+                fd = os.open(str(self.out_wav), os.O_RDWR)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            except OSError as exc:
+                _log.warning("audio capture fsync failed: %s", exc)

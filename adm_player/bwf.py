@@ -91,7 +91,10 @@ def iter_riff_chunks(path: Path | str, max_bytes: int | None = None) -> Iterator
                     break
                 scan_pos += 8 + csize + (csize & 1)
             if not found_ds64:
-                raise ValueError("BW64/RF64 file is missing a 'ds64' chunk")
+                raise ValueError(
+                    "BW64/RF64 file is missing a 'ds64' chunk "
+                    "(EBU Tech 3306 requires it for files > 4 GiB)"
+                )
 
         # Determine the real end of the WAVE body.
         if is_bw64 and bw64_size is not None:

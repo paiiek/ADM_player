@@ -952,6 +952,18 @@ class MainWindow(QMainWindow):
                 pass
             return
 
+        if total_frames <= 0:
+            # Empty capture — typically a Record-Stop with no audio reaching the
+            # callback (device fault, immediate stop). Skip writing a 0-byte
+            # BWF master and drop the temp WAV.
+            self._log_ui("WARN", "No audio frames captured — nothing to save.")
+            self._status.showMessage("Empty recording — not saved", 8000)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+
         events = self._timeline.snapshot()
         metas = self._timeline.snapshot_meta()
         blocks_raw, names_raw = events_to_object_blocks(events, metas, total_frames, sr)

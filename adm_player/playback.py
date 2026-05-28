@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import time
@@ -12,6 +13,8 @@ import soundfile as sf
 
 from .adm_model import AdmObject, active_block
 from .osc_emit import AdmOscEmitter
+
+_log = logging.getLogger(__name__)
 
 
 def _sd():
@@ -195,6 +198,7 @@ def play_adm_wav(
     progress_emit_interval_s: float | None = None,
     levels_emit_interval_s: float | None = None,
     sink: AudioSink | None = None,
+    on_error: Callable[[str], None] | None = None,
 ) -> None:
     """
     on_progress: (현재 프레임 위치, 총 프레임 수, samplerate) 블록마다 호출.
@@ -209,6 +213,9 @@ def play_adm_wav(
     sink: 제공되면(예: IpcRingSink) 오디오 장치 대신 이 sink 로 출력하며, 장치 질의/채널
         잘림 로직을 전혀 거치지 않고 파일의 **모든** 채널을 sink.write() 로 보낸다
         (ADR 0019 PR5 `--sink ipc://`, headless). None 이면 기존 sd.OutputStream 경로.
+    on_error: sink.write 가 RuntimeError / OSError 를 던진 경우(출력 장치 분리, IPC ring
+        producer teardown 등) 한 번 호출되는 콜백. 호출 후 루프는 정상 종료해 워커가
+        finalizer까지 도달한다 — raise 하지 않는다.
     """
     path = Path(path)
     with sf.SoundFile(str(path)) as f:
@@ -239,6 +246,7 @@ def play_adm_wav(
                     channel_mix=channel_mix,
                     progress_emit_interval_s=progress_emit_interval_s,
                     levels_emit_interval_s=levels_emit_interval_s,
+                    on_error=on_error,
                 )
             return
 
@@ -283,6 +291,7 @@ def play_adm_wav(
                 channel_mix=channel_mix,
                 progress_emit_interval_s=progress_emit_interval_s,
                 levels_emit_interval_s=levels_emit_interval_s,
+                on_error=on_error,
             )
 
 
@@ -304,6 +313,7 @@ def _run_playback_loop(
     channel_mix: ChannelMixState | None,
     progress_emit_interval_s: float | None,
     levels_emit_interval_s: float | None,
+    on_error: Callable[[str], None] | None = None,
 ) -> None:
     """Shared read → OSC-emit → sink.write loop for both the device and ipc sinks.
 
@@ -361,7 +371,22 @@ def _run_playback_loop(
                 on_progress(pos, total_frames, sr)
                 if prog_iv is not None:
                     last_progress_t = now_mono
-        sink.write(data)
+        try:
+            sink.write(data)
+        except (RuntimeError, OSError) as exc:
+            # Output device disconnected mid-stream (USB unplug, ALSA hang,
+            # JACK server quit) or IPC ring producer teardown. Don't propagate
+            # — the worker thread should see a clean end-of-stream, surface
+            # the cause via on_error, and let the outer `with` close the
+            # PortAudio stream / IPC sink for us.
+            msg = f"{type(exc).__name__}: {exc}"
+            _log.error("audio output write failed: %s", msg)
+            if on_error is not None:
+                try:
+                    on_error(msg)
+                except Exception as cb_exc:  # noqa: BLE001
+                    _log.warning("on_error callback raised: %s", cb_exc)
+            break
         pos += frames
     if on_progress is not None:
         on_progress(pos, total_frames, sr)
