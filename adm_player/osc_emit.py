@@ -35,10 +35,34 @@ def adm_polar_to_osc_aed(pos: ObjectPosition, azimuth_offset: float, azimuth_fli
     return az, el, dist
 
 
-def adm_cart_to_osc_xyz(pos: ObjectPosition) -> tuple[float, float, float]:
+def _apply_cart_azimuth(
+    x: float, y: float, azimuth_offset: float, azimuth_flip: bool
+) -> tuple[float, float]:
+    """Apply --azimuth-offset / --flip-azimuth to a Cartesian (x, y) pair.
+
+    Mirrors the polar convention (``az = atan2(x, y)``, ``x = sin(az)``,
+    ``y = cos(az)``) so flip/offset behave identically whether the source ADM
+    block is polar or Cartesian — Dolby Atmos masters author objects in
+    Cartesian, so without this the flags would be silent no-ops on real content.
+    Order matches the polar path: rotate by ``+offset`` first, then mirror for
+    flip (``az -> -(az + offset)``). ``z`` (elevation) is unaffected.
+    """
+    if azimuth_offset:
+        a = math.radians(azimuth_offset)
+        ca, sa = math.cos(a), math.sin(a)
+        x, y = x * ca + y * sa, -x * sa + y * ca
+    if azimuth_flip:
+        x = -x
+    return x, y
+
+
+def adm_cart_to_osc_xyz(
+    pos: ObjectPosition, azimuth_offset: float = 0.0, azimuth_flip: bool = False
+) -> tuple[float, float, float]:
     x = float(pos.x if pos.x is not None else 0.0)
     y = float(pos.y if pos.y is not None else 0.0)
     z = float(pos.z if pos.z is not None else 0.0)
+    x, y = _apply_cart_azimuth(x, y, azimuth_offset, azimuth_flip)
     return max(-1.0, min(1.0, x)), max(-1.0, min(1.0, y)), max(-1.0, min(1.0, z))
 
 
@@ -63,13 +87,18 @@ def adm_polar_to_osc_xyz(
     return max(-1.0, min(1.0, x)), max(-1.0, min(1.0, y)), max(-1.0, min(1.0, z))
 
 
-def adm_cart_to_polar_deg_distance_norm(pos: ObjectPosition) -> tuple[float, float, float]:
+def adm_cart_to_polar_deg_distance_norm(
+    pos: ObjectPosition, azimuth_offset: float = 0.0, azimuth_flip: bool = False
+) -> tuple[float, float, float]:
     """
     Cartesian ADM 블록 → (방위° , 고도° , 거리 0..1).
     `adm_polar_to_osc_xyz` 역변환: 전방 +Y, az = atan2(x,y), 거리 정규화는 polar과 동일(>1이면 /10).
     """
-    x = max(-1.0, min(1.0, float(pos.x if pos.x is not None else 0.0)))
-    y = max(-1.0, min(1.0, float(pos.y if pos.y is not None else 0.0)))
+    x = float(pos.x if pos.x is not None else 0.0)
+    y = float(pos.y if pos.y is not None else 0.0)
+    x, y = _apply_cart_azimuth(x, y, azimuth_offset, azimuth_flip)
+    x = max(-1.0, min(1.0, x))
+    y = max(-1.0, min(1.0, y))
     z = max(-1.0, min(1.0, float(pos.z if pos.z is not None else 0.0)))
     h = math.hypot(x, y)
     dist = math.sqrt(x * x + y * y + z * z)
@@ -89,7 +118,7 @@ def adm_position_to_polar_deg_distance_norm(
 ) -> tuple[float, float, float]:
     """ADM 블록이 polar이면 그대로 정규화, cartesian이면 구면 역변환."""
     if pos.mode == "cartesian":
-        return adm_cart_to_polar_deg_distance_norm(pos)
+        return adm_cart_to_polar_deg_distance_norm(pos, azimuth_offset, azimuth_flip)
     return adm_polar_to_osc_aed(pos, azimuth_offset, azimuth_flip)
 
 
@@ -106,11 +135,13 @@ def adm_polar_to_az_el_distance_adm(
     return az, el, d_adm
 
 
-def adm_cart_to_az_el_distance_adm(pos: ObjectPosition) -> tuple[float, float, float]:
+def adm_cart_to_az_el_distance_adm(
+    pos: ObjectPosition, azimuth_offset: float = 0.0, azimuth_flip: bool = False
+) -> tuple[float, float, float]:
     """
     Cartesian ADM: 구면 방위·고도(°), distance는 [-1, 1] (원점 r=0 → -1, 단위 큐브 대각 r=√3 → +1).
     """
-    x, y, z = adm_cart_to_osc_xyz(pos)
+    x, y, z = adm_cart_to_osc_xyz(pos, azimuth_offset, azimuth_flip)
     h = math.hypot(x, y)
     r = math.sqrt(x * x + y * y + z * z)
     if r < 1e-20:
@@ -127,7 +158,7 @@ def adm_position_to_az_el_distance_adm(
     pos: ObjectPosition, azimuth_offset: float, azimuth_flip: bool
 ) -> tuple[float, float, float]:
     if pos.mode == "cartesian":
-        return adm_cart_to_az_el_distance_adm(pos)
+        return adm_cart_to_az_el_distance_adm(pos, azimuth_offset, azimuth_flip)
     return adm_polar_to_az_el_distance_adm(pos, azimuth_offset, azimuth_flip)
 
 
@@ -249,7 +280,7 @@ class AdmOscEmitter:
                 self.send_object_config_cartesian(oi, True)
                 self._last_mode[oi] = "cart"
                 self._last_payload.pop(oi, None)  # mode 전환 시 캐시 무효화 (C7)
-            xyz = adm_cart_to_osc_xyz(pos)
+            xyz = adm_cart_to_osc_xyz(pos, self._azimuth_offset, self._azimuth_flip)
             xyz = tuple(xyz[i] * self._scale_cart[i] for i in range(3))
             if self._last_payload.get(oi) == xyz:
                 return

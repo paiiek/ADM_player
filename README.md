@@ -45,6 +45,11 @@ adm-recorder-gui    # recorder
 
 ## OSC preset matrix
 
+Presets are selected in the **GUI** (player and recorder, via OSC Setting). The
+`adm-player` CLI always speaks the default `adm` / `spatial_engine` wire format
+(`/adm/obj/N/{aed,xyz}`) and has no `--osc-preset` flag — point it at the target
+port and switch the receiver, or use the GUI for the non-ADM presets below.
+
 | Preset           | Address shape                          | Distance contract                     | Notes                                          |
 | ---------------- | -------------------------------------- | ------------------------------------- | ---------------------------------------------- |
 | `adm` (default)  | `/adm/obj/N/{aed,xyz}`                 | normalized [0,1], > 1 = `/20` clamp   | ADM-OSC v1.0                                   |
@@ -161,13 +166,13 @@ PY
 Pair with the player on a second terminal:
 
 ```bash
-adm-player path/to/master.wav --osc-host 127.0.0.1 --osc-port 9100 \
-                              --osc-preset adm
+adm-player path/to/master.wav --osc-host 127.0.0.1 --osc-port 9100
 ```
 
-The dumper prints lines like `/adm/obj/3/aed (12.5, 7.0, 0.3)`. Swap the
-port to match the preset's default (e.g. `9000` for L-ISA, `9877` for
-Soundscape), or override with `--osc-port` on the player.
+The dumper prints lines like `/adm/obj/3/aed (12.5, 7.0, 0.3)`. The CLI emits
+the default ADM-OSC format; to probe a non-ADM preset (L-ISA, Soundscape, …),
+drive it from the GUI and point the dumper at that preset's port (e.g. `9000`
+for L-ISA, `9877` for Soundscape).
 
 ### Audio troubleshooting
 

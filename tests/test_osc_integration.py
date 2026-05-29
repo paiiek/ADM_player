@@ -512,3 +512,51 @@ def test_ingest_aed_20m_normalizes_to_one() -> None:
     x2, y2, z2 = aed_deg_to_xyz(0.0, 0.0, 20.0)
     r2 = (x2 * x2 + y2 * y2 + z2 * z2) ** 0.5
     assert r2 == pytest.approx(1.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# C9: --flip-azimuth / --azimuth-offset must apply to Cartesian-authored objects,
+#     not just polar ones. Dolby Atmos masters author every block in Cartesian
+#     (verified: 01.wav = 15332 cartesian blocks, 0 polar), so before the fix
+#     these two flags were silent no-ops on real content. Flip mirrors X
+#     (az -> -az), offset rotates the XY plane, elevation (Z) is untouched, and
+#     the result matches the polar path's semantics exactly.
+# ---------------------------------------------------------------------------
+def test_c9_flip_azimuth_mirrors_cartesian_x() -> None:
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, azimuth_flip=True, on_send=on_send)
+    em.send_object_position(_obj(1), ObjectBlock(0, 1, ObjectPosition("cartesian", x=1.0, y=0.0, z=0.2)))
+    xyz = [v for a, v in sent if a == "/adm/obj/1/xyz"]
+    assert xyz, f"no xyz emitted; sent={[a for a, _ in sent]}"
+    x, y, z = xyz[-1]
+    assert (x, y, z) == pytest.approx((-1.0, 0.0, 0.2), abs=1e-9)
+
+
+def test_c9_azimuth_offset_rotates_cartesian_xy() -> None:
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, azimuth_offset=90.0, on_send=on_send)
+    em.send_object_position(_obj(1), ObjectBlock(0, 1, ObjectPosition("cartesian", x=1.0, y=0.0, z=0.2)))
+    x, y, z = [v for a, v in sent if a == "/adm/obj/1/xyz"][-1]
+    # +90° rotation: (x=1,y=0) -> (x=0,y=-1); elevation unchanged
+    assert (x, y, z) == pytest.approx((0.0, -1.0, 0.2), abs=1e-9)
+
+
+def test_c9_cartesian_flip_matches_polar_flip_semantics() -> None:
+    # A point authored as polar (az=30) and the same point authored as the
+    # Cartesian it converts to must flip identically.
+    polf = adm_polar_to_osc_xyz(ObjectPosition("polar", azimuth=30.0, elevation=0.0, distance=1.0), 0.0, True)
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, azimuth_flip=True, on_send=on_send)
+    px, py, pz = adm_polar_to_osc_xyz(ObjectPosition("polar", azimuth=30.0, elevation=0.0, distance=1.0), 0.0, False)
+    em.send_object_position(_obj(1), ObjectBlock(0, 1, ObjectPosition("cartesian", x=px, y=py, z=pz)))
+    cartf = [v for a, v in sent if a == "/adm/obj/1/xyz"][-1]
+    assert tuple(cartf) == pytest.approx(tuple(polf), abs=1e-9)
+
+
+def test_c9_no_transform_leaves_cartesian_unchanged() -> None:
+    # Default (offset=0, flip=False) must be byte-identical to the pre-fix path.
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), ObjectBlock(0, 1, ObjectPosition("cartesian", x=0.3, y=0.6, z=0.1)))
+    x, y, z = [v for a, v in sent if a == "/adm/obj/1/xyz"][-1]
+    assert (x, y, z) == pytest.approx((0.3, 0.6, 0.1), abs=1e-9)

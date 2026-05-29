@@ -187,11 +187,15 @@ def main(argv: list[str] | None = None) -> int:
     osc: AdmOscEmitter | None = None
     if args.dry_run:
         print(f"샘플레이트: {int(sample_rate)} Hz, 채널: {n_ch}")
-        try:
-            cap = max_output_channels(args.audio_device)
-            print(f"선택한 출력 장치 최대 채널: {cap}")
-        except Exception as e:
-            print(f"출력 장치 조회 실패: {e}", file=sys.stderr)
+        # --dry-run is metadata-only (no rendering). Only probe an output device
+        # when the user explicitly named one — otherwise a headless box with no
+        # default output prints a misleading "출력 장치 조회 실패" on every dry run.
+        if args.audio_device is not None:
+            try:
+                cap = max_output_channels(args.audio_device)
+                print(f"선택한 출력 장치 최대 채널: {cap}")
+            except Exception as e:
+                print(f"출력 장치 조회 실패: {e}", file=sys.stderr)
         print(f"chna UID 매핑: {len(chna)} 개")
         for obj in objects:
             print(

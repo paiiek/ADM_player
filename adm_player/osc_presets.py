@@ -190,7 +190,7 @@ class PresetOscEmitter:
 
         if self._xyz_only:
             if pos.mode == "cartesian":
-                xyz = adm_cart_to_osc_xyz(pos)
+                xyz = adm_cart_to_osc_xyz(pos, self._azimuth_offset, self._azimuth_flip)
             else:
                 xyz = adm_polar_to_osc_xyz(pos, self._azimuth_offset, self._azimuth_flip)
             xyz = tuple(
@@ -210,7 +210,7 @@ class PresetOscEmitter:
                 self.send_object_config_cartesian(oi, True)
                 self._last_mode[oi] = "cart"
                 self._last_payload.pop(oi, None)  # mode 전환 시 캐시 무효화 (C7)
-            xyz = adm_cart_to_osc_xyz(pos)
+            xyz = adm_cart_to_osc_xyz(pos, self._azimuth_offset, self._azimuth_flip)
             xyz = tuple(xyz[i] * self._scale_cart[i] for i in range(3))
             if self._last_payload.get(oi) == xyz:
                 return

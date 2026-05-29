@@ -619,7 +619,12 @@ class MainWindow(QMainWindow):
             else:
                 info = sd.query_devices(int(did))
             n = int(info.get("max_input_channels") or 1)
-        except (TypeError, ValueError, OSError):
+        except (TypeError, ValueError, OSError, sd.PortAudioError):
+            # sd.default.device is [-1, -1] and query_devices(-1) raises
+            # PortAudioError when the host has no (default) input device — e.g.
+            # headless boxes or a laptop with no mic. PortAudioError is a plain
+            # Exception (not OSError), so it must be named explicitly or the
+            # window fails to construct. Fall back to a generous channel count.
             n = 32
         return max(1, min(128, n))
 
@@ -765,7 +770,14 @@ class MainWindow(QMainWindow):
             default_in = sd.default.device[0]
         except (TypeError, IndexError, KeyError):
             default_in = None
-        for i, d in enumerate(sd.query_devices()):
+        try:
+            devices = list(sd.query_devices())
+        except (OSError, sd.PortAudioError):
+            # PortAudio failed to initialize / enumerate (no backend, no
+            # devices). Leave only the "System default input" entry rather than
+            # letting the window construction blow up.
+            devices = []
+        for i, d in enumerate(devices):
             n_in = int(d.get("max_input_channels") or 0)
             if n_in < 1:
                 continue
