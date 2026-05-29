@@ -138,7 +138,7 @@ def run_interactive(
     with sf.SoundFile(str(wav_path)) as f:
         n_ch = f.channels
         sr = float(f.samplerate)
-        n_frames = int(f.frames)
+        n_frames = int(len(f))
         format_info = f"{f.format}/{f.subtype}" if f.subtype else str(f.format)
     duration_sec = n_frames / sr if sr else 0.0
 

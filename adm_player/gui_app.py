@@ -392,7 +392,7 @@ def main() -> int:
         with sf.SoundFile(str(p)) as f:
             sr = float(f.samplerate)
             n_ch = f.channels
-            n_frames = int(f.frames)
+            n_frames = int(len(f))
             finfo = f"{f.format}/{f.subtype}" if f.subtype else str(f.format)
         objects = parse_adm_objects(axml, sr, chna)
         uid_meta = parse_track_uid_metadata(axml)

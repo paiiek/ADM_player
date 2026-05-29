@@ -221,7 +221,7 @@ def play_adm_wav(
     with sf.SoundFile(str(path)) as f:
         sr = int(f.samplerate)
         file_ch = f.channels
-        total_frames = int(f.frames)
+        total_frames = int(len(f))
 
         if sink is not None:
             # ipc / injected-sink path: bypass ALL device logic (no
