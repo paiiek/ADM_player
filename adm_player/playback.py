@@ -199,6 +199,8 @@ def play_adm_wav(
     levels_emit_interval_s: float | None = None,
     sink: AudioSink | None = None,
     on_error: Callable[[str], None] | None = None,
+    meta_sink: object | None = None,
+    meta_builder: object | None = None,
 ) -> None:
     """
     on_progress: (현재 프레임 위치, 총 프레임 수, samplerate) 블록마다 호출.
@@ -216,6 +218,11 @@ def play_adm_wav(
     on_error: sink.write 가 RuntimeError / OSError 를 던진 경우(출력 장치 분리, IPC ring
         producer teardown 등) 한 번 호출되는 콜백. 호출 후 루프는 정상 종료해 워커가
         finalizer까지 도달한다 — raise 하지 않는다.
+    meta_sink: 제공되면(예: MetaRingSink) 블록마다 frame-keyed ADM 메타데이터 sidecar
+        레코드를 PCM 보다 **먼저** publish 한다 (TRACK A3 / ADR 0029, meta-before-PCM
+        ordering; 소비자의 PCM-acquire 가 meta store 를 transitively 관측하도록). None 이면
+        기존 동작(OSC fallback)과 동일. meta_sink 와 짝을 이루는 meta_builder 가 필요.
+    meta_builder: MetaRecordBuilder — meta_sink 사용 시 블록별 레코드를 만든다.
     """
     path = Path(path)
     with sf.SoundFile(str(path)) as f:
@@ -228,7 +235,13 @@ def play_adm_wav(
             # sd.query_devices / _output_device_id / resolve_playback_channels /
             # max_output_channels) and write ALL file channels (PM10 / AC-11).
             write_ch = file_ch
-            with sink as active_sink:
+            import contextlib  # noqa: PLC0415
+
+            with contextlib.ExitStack() as stack:
+                active_sink = stack.enter_context(sink)
+                # The metadata sidecar (opt-in) is opened alongside the PCM sink
+                # and torn down on the same exit; None keeps today's behaviour.
+                active_meta = stack.enter_context(meta_sink) if meta_sink is not None else None
                 _run_playback_loop(
                     f=f,
                     sink=active_sink,
@@ -247,6 +260,8 @@ def play_adm_wav(
                     progress_emit_interval_s=progress_emit_interval_s,
                     levels_emit_interval_s=levels_emit_interval_s,
                     on_error=on_error,
+                    meta_sink=active_meta,
+                    meta_builder=meta_builder,
                 )
             return
 
@@ -314,6 +329,8 @@ def _run_playback_loop(
     progress_emit_interval_s: float | None,
     levels_emit_interval_s: float | None,
     on_error: Callable[[str], None] | None = None,
+    meta_sink: object | None = None,
+    meta_builder: object | None = None,
 ) -> None:
     """Shared read → OSC-emit → sink.write loop for both the device and ipc sinks.
 
@@ -365,6 +382,13 @@ def _run_playback_loop(
             for obj in objects:
                 blk = active_block(obj.blocks, t0)
                 emitter.send_object_position(obj, blk)
+        # ⟪TRACK A3 Amendment 2 — CRITICAL ORDERING⟫ publish META FIRST, then PCM
+        # (below). `pos` is the block's absolute first frame (pre-increment,
+        # matching `pos += frames` at the end) → frame_index = pos (A1). OSC
+        # emission above stays as the compatibility fallback.
+        if meta_sink is not None and meta_builder is not None:
+            records = meta_builder.build(objects, t0, pos)
+            meta_sink.publish(records, pos)
         if on_progress is not None:
             now_mono = time.monotonic()
             if prog_iv is None or (now_mono - last_progress_t) >= prog_iv:

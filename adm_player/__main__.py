@@ -63,6 +63,16 @@ def main(argv: list[str] | None = None) -> int:
         help="--sink ipc:// 사용 시 ring 용량(프레임). 2의 거듭제곱이 아니면 다음 2^n 으로 패딩한다.",
     )
     p.add_argument(
+        "--meta-sink",
+        default=None,
+        metavar="shm:/NAME",
+        help=(
+            "프레임 동기 ADM 메타데이터 sidecar 링을 함께 publish 한다 (TRACK A3 / ADR 0029, "
+            "opt-in). 형식 shm:/NAME. 엔진은 --meta-backend shm:/NAME 으로 짝을 맞춘다. "
+            "--sink ipc:// 와 함께 써야 한다 (PCM 링과 프레임을 공유). 생략 시 기존 동작(OSC fallback)."
+        ),
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="오디오 출력 없이 axml/chna 파싱 결과만 표시",
@@ -124,6 +134,16 @@ def main(argv: list[str] | None = None) -> int:
             p.error("--sink ipc:// 와 --list-audio-devices 는 함께 사용할 수 없습니다.")
         if args.out_channels is not None:
             p.error("--sink ipc:// 와 --out-channels 는 함께 사용할 수 없습니다.")
+
+    meta_name: str | None = None
+    if args.meta_sink is not None:
+        if not args.meta_sink.startswith("shm:/"):
+            p.error("--meta-sink 는 shm:/NAME 형식이어야 합니다 (예: --meta-sink shm:/spe-session-1-meta).")
+        meta_name = args.meta_sink[len("shm:/") :]
+        if not meta_name:
+            p.error("--meta-sink shm:/ 뒤에 shm 이름이 필요합니다 (예: --meta-sink shm:/spe-session-1-meta).")
+        if sink_name is None:
+            p.error("--meta-sink 는 --sink ipc:// 와 함께 써야 합니다 (PCM 링과 프레임을 공유).")
 
     if args.list_audio_devices:
         print("출력용 오디오 장치 (--audio-device 에 정수 인덱스로 지정):", flush=True)
@@ -264,12 +284,32 @@ def main(argv: list[str] | None = None) -> int:
                     block_size=args.block_size,
                     ring_frames=args.ring_frames,
                 )
+                meta_sink = None
+                meta_builder = None
+                if meta_name is not None:
+                    # TRACK A3 sidecar (opt-in): frame-keyed metadata alongside
+                    # the PCM ring. The builder mirrors the OSC emitter's coords
+                    # so the sidecar is bit-consistent with OSC for each block.
+                    from .adm_meta import MetaRecordBuilder
+                    from .meta_sink import MetaRingSink
+
+                    meta_sink = MetaRingSink(
+                        meta_name,
+                        sample_rate=int(sample_rate),
+                        slot_count=MAX_OSC_OBJECTS,
+                    )
+                    meta_builder = MetaRecordBuilder(
+                        azimuth_offset=args.azimuth_offset,
+                        azimuth_flip=args.flip_azimuth,
+                    )
                 play_adm_wav(
                     wav_path,
                     objects,
                     osc=osc,
                     block_frames=args.block_size,
                     sink=ipc_sink,
+                    meta_sink=meta_sink,
+                    meta_builder=meta_builder,
                 )
             else:
                 play_adm_wav(
