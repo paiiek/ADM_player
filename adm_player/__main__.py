@@ -164,8 +164,9 @@ def main(argv: list[str] | None = None) -> int:
     if n_over > 0:
         print(
             f"경고: 객체 {len(objects)}개 중 {n_over}개가 OSC 슬롯 한도(MAX={MAX_OSC_OBJECTS})를 초과합니다. "
-            f"spatial_engine 등 ADM-OSC 수신기는 첫 {MAX_OSC_OBJECTS} 슬롯만 받으므로 "
-            "초과 객체의 위치 메타데이터는 송신되지 않습니다 (오디오 재생은 영향 없음).",
+            f"현재 한도는 첫 {MAX_OSC_OBJECTS} 슬롯이며 (기본 128, 64-빌드 엔진은 "
+            "SPE_ADM_OSC_MAX_OBJECTS=64 로 낮춤) 초과 객체의 위치 메타데이터는 송신되지 않습니다 "
+            "(오디오 재생은 영향 없음).",
             file=sys.stderr,
         )
 

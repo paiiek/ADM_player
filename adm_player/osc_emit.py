@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
+import os
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pythonosc import udp_client
@@ -14,12 +15,33 @@ from .adm_model import AdmObject, ObjectBlock, ObjectPosition
 # 이 정규화는 spatial_engine 의 ADM_OSC_MAX_DIST 와 정렬되어야 함.
 ADM_OSC_MAX_DIST: float = 20.0
 
-# spatial_engine MAX_OBJECTS=64 와 정렬. 64를 초과하는 osc_object_index는
-# engine 측에서 무시되므로 송신 단계에서 미리 차단해 OS UDP 큐 낭비를 막는다.
-# 02.wav 처럼 108 객체를 가진 마스터는 첫 64개만 emit.
-MAX_OSC_OBJECTS: int = 64
-
 _log = logging.getLogger(__name__)
+
+
+def resolve_max_osc_objects(env: Mapping[str, str] = os.environ) -> int:
+    """Resolve the ADM-OSC object-index cap, mirroring the engine's {64,128} matrix.
+
+    The engine cmake default `SPATIAL_ENGINE_MAX_OBJECTS` was flipped 64→128 by the
+    P-1 lane (Option A), with a `#ifndef` fallback of 64 for standalone builds. These
+    are separate git repos, so there is **no shared symbol** — the Python side keeps in
+    sync via the `SPE_ADM_OSC_MAX_OBJECTS` env var. Default 128 matches a stock engine
+    build; set `SPE_ADM_OSC_MAX_OBJECTS=64` for a 64-built engine so >64 indices clamp
+    cleanly. An invalid value warns once and falls back to 128.
+    """
+    raw = env.get("SPE_ADM_OSC_MAX_OBJECTS")
+    if raw is None:
+        return 128
+    if raw in ("64", "128"):
+        return int(raw)
+    _log.warning(
+        "SPE_ADM_OSC_MAX_OBJECTS=%r is invalid (expected '64' or '128'); using default 128.",
+        raw,
+    )
+    return 128
+
+
+# Object-index cap for ADM-OSC emission. Frozen at import; see resolve_max_osc_objects.
+MAX_OSC_OBJECTS: int = resolve_max_osc_objects()
 
 
 def adm_polar_to_osc_aed(pos: ObjectPosition, azimuth_offset: float, azimuth_flip: bool) -> tuple[float, float, float]:
@@ -224,6 +246,7 @@ class AdmOscEmitter:
         *,
         scale_polar: tuple[float, float, float] = (1.0, 1.0, 1.0),
         scale_cart: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        emit_gain_width: bool = True,
     ) -> None:
         self._client = udp_client.SimpleUDPClient(host, port)
         self._prog = prog
@@ -232,8 +255,12 @@ class AdmOscEmitter:
         self._on_send = on_send
         self._scale_polar = scale_polar
         self._scale_cart = scale_cart
+        self._emit_gain_width = emit_gain_width
         self._last_mode: dict[int, str] = {}
         self._last_payload: dict[int, tuple[float, float, float]] = {}
+        self._last_gain: dict[int, float] = {}
+        self._last_width: dict[int, float] = {}
+        self._active: dict[int, bool] = {}
         self._overflow_warned: set[int] = set()
 
     def _send(self, address: str, value: Any) -> None:
@@ -268,18 +295,40 @@ class AdmOscEmitter:
         self._send(self._addr("config", "obj", obj_index, "cartesian"), int(1 if use_cartesian else 0))
 
     def send_object_position(self, obj: AdmObject, block: ObjectBlock | None) -> None:
-        if block is None:
-            return
-        pos = block.position
         # WAV 인터리브 채널 번호(1-based)와 동일한 N → /adm/obj/N
-        oi = obj.osc_object_index
+        oi = obj.osc_object_index  # read before the None check for the active-flag (R6)
+        if block is None:
+            self._active[oi] = False  # record silence for reactivation re-assert (R6)
+            return
         if not self._check_obj_index(oi):
             return
+        if not self._active.get(oi, False):
+            # silent→active edge: drop caches so the re-entering block re-asserts
+            # position AND gain/width (bounds the reactivation UDP-drop strand, R6).
+            self._last_payload.pop(oi, None)
+            self._last_gain.pop(oi, None)
+            self._last_width.pop(oi, None)
+            self._active[oi] = True
+        self._emit_position(oi, block.position)
+        if self._emit_gain_width:
+            self._emit_gain_width_fields(oi, block)
+
+    def _emit_position(self, oi: int, pos: ObjectPosition) -> None:
+        """Emit the position payload for object ``oi`` with its own dedupe cache.
+
+        The config/mode-announce MUST stay BEFORE the position dedupe so a mode switch
+        is announced even on an unchanged coordinate tuple. Dedupe returns from THIS
+        helper only (never the whole ``send_object_position``), so gain/width still
+        stream on a positionally-static object.
+        """
         if pos.mode == "cartesian":
             if self._last_mode.get(oi) != "cart":
                 self.send_object_config_cartesian(oi, True)
                 self._last_mode[oi] = "cart"
-                self._last_payload.pop(oi, None)  # mode 전환 시 캐시 무효화 (C7)
+                # mode 전환 시 캐시 무효화 (C7); gain/width 도 함께 drop 해 재전송 (R6)
+                self._last_payload.pop(oi, None)
+                self._last_gain.pop(oi, None)
+                self._last_width.pop(oi, None)
             xyz = adm_cart_to_osc_xyz(pos, self._azimuth_offset, self._azimuth_flip)
             xyz = tuple(xyz[i] * self._scale_cart[i] for i in range(3))
             if self._last_payload.get(oi) == xyz:
@@ -290,7 +339,10 @@ class AdmOscEmitter:
             if self._last_mode.get(oi) != "polar":
                 self.send_object_config_cartesian(oi, False)
                 self._last_mode[oi] = "polar"
-                self._last_payload.pop(oi, None)  # mode 전환 시 캐시 무효화 (C7)
+                # mode 전환 시 캐시 무효화 (C7); gain/width 도 함께 drop 해 재전송 (R6)
+                self._last_payload.pop(oi, None)
+                self._last_gain.pop(oi, None)
+                self._last_width.pop(oi, None)
             aed = adm_polar_to_osc_aed(pos, self._azimuth_offset, self._azimuth_flip)
             aed = (
                 aed[0] * self._scale_polar[0],
@@ -301,3 +353,19 @@ class AdmOscEmitter:
                 return
             self._last_payload[oi] = aed
             self._send(self._addr("obj", oi, "aed"), list(aed))
+
+    def _emit_gain_width_fields(self, oi: int, block: ObjectBlock) -> None:
+        """Emit `/adm/obj/N/gain` (linear) and `/adm/obj/N/width` (radians), 1:1.
+
+        Independent per-field dedupe. ``is not None`` guard (so ``gain==0.0`` mute IS
+        emitted). No clamping — the engine clamps gain to [0,8]; width is verbatim
+        radians (deg→rad would double-apply).
+        """
+        gain = block.gain
+        if gain is not None and gain != self._last_gain.get(oi):
+            self._last_gain[oi] = float(gain)
+            self._send(self._addr("obj", oi, "gain"), float(gain))
+        width = block.width
+        if width is not None and width != self._last_width.get(oi):
+            self._last_width[oi] = float(width)
+            self._send(self._addr("obj", oi, "width"), float(width))

@@ -7,7 +7,8 @@ without actually requiring a spatial_engine binary. Confirms:
   - addresses match ADM-OSC v1.0 (/adm/obj/N/aed, /adm/obj/N/xyz, /adm/config/obj/N/cartesian)
   - distance contract: meters input → normalized [0,1] with 20 m = 1.0
   - mode transition (polar ↔ cartesian) is not silently dropped
-  - object indices > MAX_OSC_OBJECTS (64) are dropped with a single warning, not emitted
+  - object indices > MAX_OSC_OBJECTS (default 128; env SPE_ADM_OSC_MAX_OBJECTS opt-down to 64)
+    are dropped with a single warning, not emitted
   - lip-sync window: time between scheduled emit and packet reception stays sub-millisecond
 
 Run:

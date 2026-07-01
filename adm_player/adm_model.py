@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import bisect
+import math
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -79,9 +80,15 @@ class ObjectPosition:
 
 @dataclass
 class ObjectBlock:
+    # NOTE: distinct from adm_recorder.timeline_store.ObjectBlock (that one is
+    # positional start,end,x,y,z,gain,width). Here gain/width are appended AFTER
+    # position so existing positional construction ObjectBlock(start,end,pos) stays
+    # valid and byte-identical. gain = linear, width = radians (BS.2076 angular extent).
     start_sec: float
     end_sec: float
     position: ObjectPosition
+    gain: float | None = None
+    width: float | None = None
 
 
 @dataclass
@@ -190,6 +197,34 @@ def _parse_position(block_el: ET.Element) -> ObjectPosition | None:
     return None
 
 
+def _parse_block_gain_width(bf: ET.Element) -> tuple[float | None, float | None]:
+    """Read direct-child <gain>(linear)/<width>(radians) off an audioBlockFormat.
+
+    Case-tolerant on the local tag name (like _parse_position). Malformed / blank /
+    non-finite (NaN/Inf) text → None (never crash, never a wrong number). The writer
+    omits both when absent, so absent → (None, None) keeps construction byte-identical.
+    """
+    gain: float | None = None
+    width: float | None = None
+    for sub in bf:
+        name = _local(sub.tag).lower()
+        if name not in ("gain", "width"):
+            continue
+        if sub.text is None:
+            continue
+        try:
+            v = float(sub.text.strip())
+        except ValueError:
+            continue
+        if not math.isfinite(v):
+            continue
+        if name == "gain":
+            gain = v
+        else:
+            width = v
+    return gain, width
+
+
 def _channel_blocks(root: ET.Element, channel_format_id: str, sample_rate: float) -> list[ObjectBlock]:
     blocks: list[ObjectBlock] = []
     for chf in root.iter():
@@ -211,7 +246,8 @@ def _channel_blocks(root: ET.Element, channel_format_id: str, sample_rate: float
             pos = _parse_position(bf)
             if pos is None:
                 pos = ObjectPosition(mode="polar", azimuth=0.0, elevation=0.0, distance=1.0)
-            blocks.append(ObjectBlock(start_sec=t0, end_sec=t1, position=pos))
+            gain, width = _parse_block_gain_width(bf)
+            blocks.append(ObjectBlock(start_sec=t0, end_sec=t1, position=pos, gain=gain, width=width))
     blocks.sort(key=lambda b: b.start_sec)
     return blocks
 

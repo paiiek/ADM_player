@@ -31,6 +31,7 @@ from adm_player.osc_emit import (
     adm_cart_to_polar_deg_distance_norm,
     adm_polar_to_osc_aed,
     adm_polar_to_osc_xyz,
+    resolve_max_osc_objects,
 )
 from adm_recorder.osc_ingest import aed_deg_to_xyz
 from adm_player.osc_presets import (
@@ -560,3 +561,241 @@ def test_c9_no_transform_leaves_cartesian_unchanged() -> None:
     em.send_object_position(_obj(1), ObjectBlock(0, 1, ObjectPosition("cartesian", x=0.3, y=0.6, z=0.1)))
     x, y, z = [v for a, v in sent if a == "/adm/obj/1/xyz"][-1]
     assert (x, y, z) == pytest.approx((0.3, 0.6, 0.1), abs=1e-9)
+
+
+# ================================================================== A1: env-resolved object cap
+# The cap symbol lives in one repo but must mirror the engine's {64,128} matrix in the
+# other. resolve_max_osc_objects is a pure helper; MAX_OSC_OBJECTS is frozen at import.
+
+
+def test_a1_default_cap_is_128() -> None:
+    assert resolve_max_osc_objects({}) == 128
+
+
+def test_a1_env_override_clamps_to_64() -> None:
+    # Covers the RESOLVER only. The module constant MAX_OSC_OBJECTS is frozen at import
+    # time, so the "override clamps EMISSION" path is credited to the subprocess run in
+    # the plan's §6 (SPE_ADM_OSC_MAX_OBJECTS=64 python -m pytest ...).
+    assert resolve_max_osc_objects({"SPE_ADM_OSC_MAX_OBJECTS": "64"}) == 64
+
+
+def test_a1_env_override_128_explicit() -> None:
+    assert resolve_max_osc_objects({"SPE_ADM_OSC_MAX_OBJECTS": "128"}) == 128
+
+
+def test_a1_env_override_invalid_falls_back_128(caplog) -> None:
+    caplog.set_level("WARNING", logger="adm_player.osc_emit")
+    assert resolve_max_osc_objects({"SPE_ADM_OSC_MAX_OBJECTS": "not-a-number"}) == 128
+    assert any("SPE_ADM_OSC_MAX_OBJECTS" in r.message for r in caplog.records), (
+        "invalid env value must warn once"
+    )
+
+
+@pytest.mark.skipif(
+    MAX_OSC_OBJECTS < 100, reason="cap opt-down (env SPE_ADM_OSC_MAX_OBJECTS=64) drops obj 100 by design"
+)
+def test_a1_object_100_emits_at_cap_128() -> None:
+    """The 64-drop regression: a 108-object master's obj 100 must now reach the wire."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(
+        _obj(100), ObjectBlock(0, 1, ObjectPosition("polar", azimuth=0, elevation=0, distance=0.5))
+    )
+    addrs = [a for a, _ in sent]
+    assert "/adm/obj/100/aed" in addrs, f"obj 100 dropped at cap {MAX_OSC_OBJECTS}; sent={addrs}"
+
+
+# ================================================================== A2: gain/width emission
+# The reader is the writer's exact inverse: parse gain(linear)/width(radians) when present,
+# emit /adm/obj/N/gain|width 1:1, DECOUPLED from the position dedupe so a static-position
+# object still streams level/width automation.
+
+
+def _blk(pos: ObjectPosition, gain=None, width=None) -> ObjectBlock:
+    return ObjectBlock(0, 1, pos, gain=gain, width=width)
+
+
+def _polar(az=0.0, el=0.0, dist=1.0) -> ObjectPosition:
+    return ObjectPosition("polar", azimuth=az, elevation=el, distance=dist)
+
+
+def test_a2_emit_gain_width_addresses() -> None:
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), _blk(_polar(), gain=0.7, width=0.5))
+    assert next(v for a, v in sent if a == "/adm/obj/1/gain") == pytest.approx(0.7)
+    assert next(v for a, v in sent if a == "/adm/obj/1/width") == pytest.approx(0.5)
+
+
+def test_a2_width_radians_passthrough_1to1() -> None:
+    """Width is verbatim radians. A 0.5-rad fixture proves it: a deg→rad bug would emit
+    0.00873 (0.5° in rad), and a rad→deg bug would emit 28.6° — both clearly != 0.5."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), _blk(_polar(), width=0.5))
+    w = next(v for a, v in sent if a == "/adm/obj/1/width")
+    assert w == 0.5  # exact float, no unit conversion
+
+
+def test_a2_gain_linear_passthrough_1to1() -> None:
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), _blk(_polar(), gain=2.0))
+    g = next(v for a, v in sent if a == "/adm/obj/1/gain")
+    assert g == 2.0  # verbatim linear, no clamping in Python (engine clamps)
+
+
+def test_a2_absent_emits_no_gain_width() -> None:
+    """Position-only block → not a single /gain|/width on the wire (byte-identity)."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), _blk(_polar(az=30.0)))
+    addrs = [a for a, _ in sent]
+    assert not any(a.endswith("/gain") or a.endswith("/width") for a in addrs), f"leaked; sent={addrs}"
+
+
+def test_a2_gain_width_dedupe() -> None:
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    blk = _blk(_polar(), gain=0.6, width=0.4)
+    em.send_object_position(_obj(1), blk)
+    em.send_object_position(_obj(1), blk)
+    assert [a for a, _ in sent].count("/adm/obj/1/gain") == 1
+    assert [a for a, _ in sent].count("/adm/obj/1/width") == 1
+
+
+def test_a2_gate_flag_disables_emission() -> None:
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send, emit_gain_width=False)
+    em.send_object_position(_obj(1), _blk(_polar(), gain=0.7, width=0.5))
+    addrs = [a for a, _ in sent]
+    assert not any(a.endswith("/gain") or a.endswith("/width") for a in addrs), f"gate leaked; sent={addrs}"
+    # position still flows
+    assert "/adm/obj/1/aed" in addrs
+
+
+def test_a2_preset_emitters_never_emit_adm_gain_width() -> None:
+    """Foreign-protocol presets speak their own wire format, never /adm/.../gain|width."""
+    for preset_id in ("spat_revolution", "lisa", "soundscape"):
+        sent, on_send = _capture()
+        em = create_osc_emitter(
+            preset_id, "127.0.0.1", _free_port(),
+            azimuth_offset=0.0, azimuth_flip=False, on_send=on_send, scales={},
+        )
+        em.send_object_position(_obj(1), _blk(ObjectPosition("cartesian", x=0.3, y=0.4, z=0.5), gain=0.5, width=0.5))
+        addrs = [a for a, _ in sent]
+        assert not any(a.startswith("/adm/") for a in addrs), f"{preset_id} emitted /adm/; sent={addrs}"
+
+
+# ---------------------------------------------------- A2 BLOCKING falsifiers (static-position)
+
+def test_a2_static_position_changing_gain_still_emits() -> None:
+    """Direct falsifier for the v1 defect: position identical across two blocks, gain
+    changes 0.5→0.3 → BOTH /adm/obj/N/gain must reach the wire (dedupe must not swallow
+    them via a whole-method position early-return)."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), _blk(_polar(az=10.0), gain=0.5))
+    em.send_object_position(_obj(1), _blk(_polar(az=10.0), gain=0.3))
+    gains = [v for a, v in sent if a == "/adm/obj/1/gain"]
+    assert gains == pytest.approx([0.5, 0.3])
+    # position emitted once (deduped), proving gain is decoupled from the position path
+    assert [a for a, _ in sent].count("/adm/obj/1/aed") == 1
+
+
+def test_a2_static_position_changing_width_still_emits() -> None:
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), _blk(_polar(az=10.0), width=0.2))
+    em.send_object_position(_obj(1), _blk(_polar(az=10.0), width=0.6))
+    widths = [v for a, v in sent if a == "/adm/obj/1/width"]
+    assert widths == pytest.approx([0.2, 0.6])
+    assert [a for a, _ in sent].count("/adm/obj/1/aed") == 1
+
+
+def test_a2_gain_zero_emits() -> None:
+    """gain==0.0 (mute-via-gain) must be emitted, not swallowed by an implicit falsy guard."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), _blk(_polar(), gain=0.0))
+    assert ("/adm/obj/1/gain", 0.0) in [(a, v) for a, v in sent]
+
+
+def test_a2_mixed_block_gain_absent_retains() -> None:
+    """block1 gain=0.5, block2 gain absent → no NEW /gain (omit→retain semantics pinned).
+    Documented limitation vs BS.2076 1.0-default (F-a2-gain-default-semantics)."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), _blk(_polar(az=5.0), gain=0.5))
+    em.send_object_position(_obj(1), _blk(_polar(az=15.0), gain=None))
+    gains = [v for a, v in sent if a == "/adm/obj/1/gain"]
+    assert gains == pytest.approx([0.5]), f"absent gain must not re-emit; got {gains}"
+
+
+def test_a2_mode_switch_reemits_gain() -> None:
+    """R6: a coord-mode transition drops the gain/width caches so an unchanged gain
+    re-sends (guards against a UDP-dropped gain stranding loudness across the switch)."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), _blk(_polar(), gain=0.5))
+    em.send_object_position(_obj(1), _blk(ObjectPosition("cartesian", x=0, y=1, z=0), gain=0.5))
+    gains = [v for a, v in sent if a == "/adm/obj/1/gain"]
+    assert gains == pytest.approx([0.5, 0.5]), f"mode switch must re-emit gain; got {gains}"
+
+
+def test_a2_reactivation_reemits_gain() -> None:
+    """R6 (wired via self._active): block → None(silent) → block(same pos+gain) must
+    re-emit /adm/obj/N/gain. Without the silent→active edge this would be dedupe-swallowed."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), _blk(_polar(az=10.0), gain=0.5))
+    em.send_object_position(_obj(1), None)  # object goes silent
+    em.send_object_position(_obj(1), _blk(_polar(az=10.0), gain=0.5))  # re-enters, same pos+gain
+    gains = [v for a, v in sent if a == "/adm/obj/1/gain"]
+    assert gains == pytest.approx([0.5, 0.5]), f"reactivation must re-assert gain; got {gains}"
+    # position also re-asserted on reactivation
+    assert [a for a, _ in sent].count("/adm/obj/1/aed") == 2
+
+
+def test_a2_mode_switch_emits_config_on_static_coord() -> None:
+    """C9 ordering: config/mode-announce stays BEFORE the position dedupe, so a mode
+    switch on a coincidentally-equal coordinate tuple still emits the cartesian config."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    # polar (0,0,1) then cartesian (0,0,1) — the xyz tuple could coincide, but the
+    # mode-announce must fire regardless.
+    em.send_object_position(_obj(1), _blk(_polar(az=0.0, el=0.0, dist=1.0)))
+    em.send_object_position(_obj(1), _blk(ObjectPosition("cartesian", x=0.0, y=0.0, z=1.0)))
+    cfg = [v for a, v in sent if a == "/adm/config/obj/1/cartesian"]
+    assert 1 in cfg, f"cartesian mode-announce missing on static coord; sent={[a for a, _ in sent]}"
+
+
+# ---------------------------------------------------- convention goldens (REQUIRED)
+
+def test_golden_position_only_first64_bit_identical() -> None:
+    """A ≤64-object position-only run must be a bit-for-bit identical OSC stream to the
+    legacy (pre-A2) emitter: no gain/width leak, coordinate/distance conventions frozen."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, on_send=on_send)
+    em.send_object_position(_obj(1), ObjectBlock(0, 1, _polar(az=0.0, el=0.0, dist=1.0)))
+    em.send_object_position(_obj(2), ObjectBlock(0, 1, _polar(az=30.0, el=10.0, dist=0.5)))
+    em.send_object_position(_obj(3), ObjectBlock(0, 1, ObjectPosition("cartesian", x=0.3, y=0.6, z=0.1)))
+    expected = [
+        ("/adm/config/obj/1/cartesian", 0),
+        ("/adm/obj/1/aed", [0.0, 0.0, 1.0]),
+        ("/adm/config/obj/2/cartesian", 0),
+        ("/adm/obj/2/aed", [30.0, 10.0, 0.5]),
+        ("/adm/config/obj/3/cartesian", 1),
+        ("/adm/obj/3/xyz", [0.3, 0.6, 0.1]),
+    ]
+    assert sent == expected, f"legacy position-only stream drifted; got {sent}"
+
+
+def test_golden_az_dist_convention_unchanged() -> None:
+    """ADR0006: azimuth flip negates az; distance in meters divides by ADM_OSC_MAX_DIST=20.
+    Freeze both in one packet: az=30 flip→-30, dist=10 m → 0.5."""
+    sent, on_send = _capture()
+    em = AdmOscEmitter("127.0.0.1", _free_port(), prog=None, azimuth_flip=True, on_send=on_send)
+    em.send_object_position(_obj(1), ObjectBlock(0, 1, _polar(az=30.0, el=0.0, dist=10.0)))
+    aed = next(v for a, v in sent if a == "/adm/obj/1/aed")
+    assert aed == [-30.0, 0.0, 0.5], f"az-flip / ×20 distance convention changed; got {aed}"

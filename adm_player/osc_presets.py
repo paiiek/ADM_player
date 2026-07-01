@@ -149,6 +149,8 @@ class PresetOscEmitter:
         self._client.send_message(address, value)
 
     def _check_obj_index(self, oi: int) -> bool:
+        # Shares the same MAX_OSC_OBJECTS cap symbol as AdmOscEmitter (env-resolved,
+        # default 128). Presets ride the raised cap but never emit /adm/.../gain|width.
         if oi < 1 or oi > MAX_OSC_OBJECTS:
             if oi not in self._overflow_warned:
                 self._overflow_warned.add(oi)

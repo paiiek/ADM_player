@@ -46,6 +46,48 @@ DOLBY_STYLE_ADM = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+# Block with per-block <gain>(linear)/<width>(radians) — the writer emits these; the
+# reader must now carry them onto ObjectBlock (A2).
+GAIN_WIDTH_ADM = """<?xml version="1.0" encoding="UTF-8"?>
+<ebuCore xmlns="urn:ebu:metadata:schema:ebuCore_2018">
+  <audioPackFormat audioPackFormatID="Pack_01" typeLabel="0000" typeDefinition="Objects">
+    <audioChannelFormatIDRef>Ch_01</audioChannelFormatIDRef>
+  </audioPackFormat>
+  <audioChannelFormat audioChannelFormatID="Ch_01" typeLabel="0000" typeDefinition="Objects">
+    <audioBlockFormat rtime="00:00:00.000000" duration="00:00:01.000000">
+      <position azimuth="30" elevation="5" distance="1"/>
+      <gain>0.5</gain>
+      <width>0.25</width>
+    </audioBlockFormat>
+  </audioChannelFormat>
+  <audioObject audioObjectID="Obj1" typeDefinition="Objects">
+    <audioPackFormatIDRef>Pack_01</audioPackFormatIDRef>
+    <audioTrackUIDRef>ATU_00000001</audioTrackUIDRef>
+  </audioObject>
+</ebuCore>
+"""
+
+# Non-finite / malformed gain & width must be treated as absent (None), never crash.
+NONFINITE_GAIN_WIDTH_ADM = """<?xml version="1.0" encoding="UTF-8"?>
+<ebuCore xmlns="urn:ebu:metadata:schema:ebuCore_2018">
+  <audioPackFormat audioPackFormatID="Pack_01" typeLabel="0000" typeDefinition="Objects">
+    <audioChannelFormatIDRef>Ch_01</audioChannelFormatIDRef>
+  </audioPackFormat>
+  <audioChannelFormat audioChannelFormatID="Ch_01" typeLabel="0000" typeDefinition="Objects">
+    <audioBlockFormat rtime="00:00:00.000000" duration="00:00:01.000000">
+      <position azimuth="30" elevation="5" distance="1"/>
+      <gain>nan</gain>
+      <width>inf</width>
+    </audioBlockFormat>
+  </audioChannelFormat>
+  <audioObject audioObjectID="Obj1" typeDefinition="Objects">
+    <audioPackFormatIDRef>Pack_01</audioPackFormatIDRef>
+    <audioTrackUIDRef>ATU_00000001</audioTrackUIDRef>
+  </audioObject>
+</ebuCore>
+"""
+
+
 def _build_wav_with_axml(
     axml: str,
     num_frames: int = 48,
@@ -121,6 +163,26 @@ class TestAdmModel(unittest.TestCase):
         self.assertEqual(o.blocks[0].position.mode, "cartesian")
         self.assertAlmostEqual(o.blocks[0].position.x or 0.0, -0.5)
         self.assertAlmostEqual(o.blocks[0].position.y or 0.0, 0.25)
+
+    def test_a2_parse_block_reads_gain_width(self) -> None:
+        objs = parse_adm_objects(GAIN_WIDTH_ADM, 48000.0, {"ATU_00000001": 0})
+        b = objs[0].blocks[0]
+        self.assertAlmostEqual(b.gain, 0.5)
+        self.assertAlmostEqual(b.width, 0.25)
+
+    def test_a2_parse_block_absent_is_none(self) -> None:
+        # MINIMAL_ADM has no <gain>/<width> → both must stay None (byte-identical path).
+        objs = parse_adm_objects(MINIMAL_ADM, 48000.0, {"ATU_00000001": 0})
+        b = objs[0].blocks[0]
+        self.assertIsNone(b.gain)
+        self.assertIsNone(b.width)
+
+    def test_a2_parse_block_nonfinite_is_none(self) -> None:
+        # NaN/Inf must be swallowed → None (never a wrong number, never a crash).
+        objs = parse_adm_objects(NONFINITE_GAIN_WIDTH_ADM, 48000.0, {"ATU_00000001": 0})
+        b = objs[0].blocks[0]
+        self.assertIsNone(b.gain)
+        self.assertIsNone(b.width)
 
 
 def _chna_40(track_idx: int, uid_ascii: bytes) -> bytes:
