@@ -10,8 +10,9 @@ Wire contract (recorder → engine, verified against
     /sys/handshake  ,sii  "echo_subscriber=adm_object_stream", schema_version, echo_port
     /hb/ping        ,f    unix_seconds        (every HEARTBEAT_SEC; refreshes TTL)
 
-Note the ``,sii`` ordering (string first) — see :meth:`subscribe` for why the
-documented ``,iis`` shape would be mis-decoded by the engine (D-4 quirk).
+The ``,sii`` ordering (string first) is a historical accident, not a requirement:
+the engine reads these fields by *type index*, so ``,iis`` is equally correct.
+See :meth:`subscribe`.
 
 * The handshake goes to the engine's single inbound OSC socket (default 9100 —
   the same port the player streams ``/adm/obj/N/aed`` to). The engine captures
@@ -130,17 +131,19 @@ class EngineEchoSubscriber:
     def subscribe(self) -> None:
         """One-shot ``/sys/handshake`` advertising ``echo_port`` as reply_port.
 
-        Sent as ``,sii [tag, schema, echo_port]`` — string first. This dodges the
-        engine's D-4 quirk: ``CommandDecoder::buildCommand`` treats *any* message
-        whose type tags start ``ii`` as carrying a leading ``seq, id`` pair and
-        strips the first two ints, so the documented ``,iis`` ordering would make
-        the engine read ``schema`` and ``reply_port`` as 0 — leaving the recorder
-        unregistered (``reply_port > 0`` is required at SpatialEngine.cpp echo
-        registration) and the handshake version-mismatched. The engine reads
+        Sent as ``,sii [tag, schema, echo_port]`` — string first. The engine reads
         these fields by *type index* (``ints[0]``=schema, ``ints[1]``=reply_port,
-        ``strings[0]``=tag), not absolute position, so leading with the string is
-        wire-correct today and stays correct if the engine later carves
-        ``/sys/handshake`` out of the seq/id heuristic.
+        ``strings[0]``=tag), never by absolute position, so this ordering and the
+        documented ``,iis`` are equally correct on the wire.
+
+        The string-first ordering is **vestigial**. It was chosen to dodge an engine
+        bug — ``CommandDecoder::buildCommand`` used to strip the leading two ints off
+        *any* message whose type tags began ``ii``, which zeroed ``schema`` and
+        ``reply_port`` and left the recorder unregistered. **That bug is fixed**: the
+        engine now reads every payload literally (spatial_engine ADR 0045, "the OSC
+        command wire carries no seq/id envelope"). Nothing here depends on the
+        argument order any more, and the old behaviour is not the protocol — do not
+        reintroduce a workaround for it.
         """
         self._send(
             "/sys/handshake",
