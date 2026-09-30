@@ -14,12 +14,15 @@ ipc://` path must run on a headless host (ADR 0019 PR5 PM10 / AC-11).
 
 from __future__ import annotations
 
+import ctypes
 import gc
 import logging
 import os
+import platform
 import struct
 import threading
 import time
+from collections.abc import Callable
 from types import TracebackType
 from typing import Final
 
@@ -27,6 +30,119 @@ import numpy as np
 from multiprocessing import shared_memory
 
 _log = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _fence — CROSS-PROCESS memory fence (A-14)
+#
+# The wire contract is release/acquire between THIS Python producer and the C++
+# consumer `SharedRingBackend` (spatial_engine), which reads
+#   write_idx.load(std::memory_order_acquire)      SharedRingBackend.cpp:461
+#   read_idx.store(..., std::memory_order_release) SharedRingBackend.cpp:555
+# The consumer half is correct. This module is the PRODUCER half, and it had
+# nothing: `struct.pack_into` is a plain memcpy into the mmap, and the previous
+# `os.sched_yield()` is a scheduler hint, NOT a barrier (its own comment said
+# so). That is accidentally correct on x86-64 (TSO orders store→store) and
+# WRONG on ARM64/AArch64, where plain stores may be reordered — so the consumer
+# can observe an advanced write_idx pointing at samples that are not there yet.
+# AArch64 is a shipping target: `dist/ADM Player.app` is a Darwin build.
+#
+# ★ The GIL does NOT help. It serializes CPython BYTECODE between threads of
+# ONE process. It is not a CPU memory barrier, and the consumer here is a
+# DIFFERENT PROCESS running compiled C++ on another core. The GIL is simply not
+# in this picture.
+#
+# Resolution order (the winner is recorded in FENCE_IMPL, which is asserted by
+# the test gate — a silent downgrade must be observable):
+#   1. libatomic `atomic_thread_fence` — the C11 out-of-line fence.
+#      MEASURED: x86-64 emits `lock orq $0x0,(%rsp)`; aarch64 emits `dmb ish`.
+#   2. Darwin `OSMemoryBarrier` from libSystem.
+#   3. POSIX `pthread_mutex_lock`/`unlock` on a private mutex — POSIX
+#      §4.12 makes this a memory-synchronization point on every platform.
+#   4. NOTHING found: on a strongly-ordered ISA (x86) fall back to a no-op,
+#      which is SOUND by the ISA, and warn. On any weakly-ordered ISA, RAISE —
+#      degrading silently there is the exact defect this replaces.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MO_SEQ_CST: Final[int] = 5  # C11 memory_order_seq_cst
+
+# ISAs whose store order is strong enough that a no-op fence is sound.
+_TSO_MACHINES: Final[frozenset[str]] = frozenset(
+    {"x86_64", "amd64", "i386", "i486", "i586", "i686", "x86", "AMD64"}
+)
+
+
+def _resolve_fence() -> tuple[Callable[[], None], str]:
+    """Return (callable, impl_name) for a full cross-process memory fence."""
+    # 1. libatomic's C11 fence.
+    for lib in ("libatomic.so.1", "libatomic.so", "libatomic.dylib", None):
+        try:
+            dll = ctypes.CDLL(lib)
+            fn = dll.atomic_thread_fence
+        except (OSError, AttributeError):
+            continue
+        fn.restype = None
+        fn.argtypes = [ctypes.c_int]
+        try:
+            fn(_MO_SEQ_CST)
+        except Exception:  # pragma: no cover - defensive
+            continue
+        return (lambda _fn=fn: _fn(_MO_SEQ_CST)), f"atomic_thread_fence({lib or 'process'})"
+
+    # 2. Darwin's libSystem barrier.
+    try:
+        dll = ctypes.CDLL(None)
+        fn = dll.OSMemoryBarrier
+        fn.restype = None
+        fn.argtypes = []
+        fn()
+        return (lambda _fn=fn: _fn()), "OSMemoryBarrier"
+    except Exception:  # OSError / AttributeError on every non-Darwin platform
+        pass
+
+    # 3. POSIX mutex round-trip (available wherever CPython has threads).
+    for lib in (None, "libpthread.so.0", "libc.so.6"):
+        try:
+            dll = ctypes.CDLL(lib)
+            init, lock, unlock = (
+                dll.pthread_mutex_init,
+                dll.pthread_mutex_lock,
+                dll.pthread_mutex_unlock,
+            )
+        except (OSError, AttributeError):
+            continue
+        # pthread_mutex_t is opaque (40 B glibc / 64 B libSystem); over-allocate
+        # and keep a module-level reference so it is never collected.
+        mutex = ctypes.create_string_buffer(256)
+        if init(mutex, None) != 0 or lock(mutex) != 0 or unlock(mutex) != 0:
+            continue
+
+        def _pthread_fence(_l=lock, _u=unlock, _m=mutex) -> None:
+            _l(_m)
+            _u(_m)
+
+        return _pthread_fence, "pthread_mutex"
+
+    # 4. Nothing available.
+    machine = platform.machine()
+    if machine in _TSO_MACHINES:
+        _log.warning(
+            "no memory-fence primitive found; falling back to a no-op on %s "
+            "(sound: this ISA is store-ordered). Install libatomic for an "
+            "explicit fence.",
+            machine,
+        )
+        return (lambda: None), f"noop-tso[{machine}]"
+    raise RuntimeError(
+        f"IpcRingSink: no cross-process memory fence available on weakly-ordered "
+        f"machine {machine!r}. The shm ring publish would be UNORDERED and the "
+        f"C++ consumer could read torn blocks. Install libatomic (e.g. "
+        f"`apt-get install libatomic1`) or run on a store-ordered ISA."
+    )
+
+
+_fence, FENCE_IMPL = _resolve_fence()
+"""`_fence()` issues a full memory barrier; `FENCE_IMPL` names the mechanism."""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # _HEADER — offset table mirroring core/src/audio_io/shm/RingHeader.h
@@ -40,7 +156,7 @@ _log = logging.getLogger(__name__)
 # Constants (RingHeader.h:25-27)
 SPE_RING_MAGIC: Final[int] = 0x53504543484D4E47  # "SPECHMNG" LE u64  (RingHeader.h:25)
 RING_HEADER_SIZE: Final[int] = 4096              # kRingHeaderSize     (RingHeader.h:26)
-RING_HEADER_VERSION: Final[int] = 1              # kRingHeaderVersion  (RingHeader.h:27)
+RING_HEADER_VERSION: Final[int] = 2              # kRingHeaderVersion  (RingHeader.h:27)
 
 # ProducerState enum (RingHeader.h:31-36)
 STATE_IDLE: Final[int] = 0       # RingHeader.h:32
@@ -60,17 +176,17 @@ OFF_WRITE_IDX: Final[int] = 0x0020                   # atomic<u64> write_idx    
 OFF_READ_IDX: Final[int] = 0x0028                    # atomic<u64> read_idx             RingHeader.h:87
 OFF_PRODUCER_PID: Final[int] = 0x0030                # u32  producer_pid                RingHeader.h:88
 # The three UNALIGNED hot-path atomics (4-mod-8 offsets) — do NOT 8-align them.
-OFF_PRODUCER_HEARTBEAT_MS: Final[int] = 0x0034       # atomic<u64> producer_heartbeat_ms      RingHeader.h:89
-OFF_XRUN_COUNT: Final[int] = 0x003C                  # atomic<u64> xrun_count                 RingHeader.h:90
-OFF_PRODUCER_META_BLOCK_PTS_NS: Final[int] = 0x0044  # atomic<u64> producer_meta_block_pts_ns RingHeader.h:91
-OFF_PRODUCER_STATE: Final[int] = 0x004C              # atomic<u32> producer_state       RingHeader.h:92
-OFF_SEQ: Final[int] = 0x0050                         # atomic<u64> seq                  RingHeader.h:93
-OFF_RESERVED: Final[int] = 0x0058                    # u8[0xFA8] _reserved (zero-init)  RingHeader.h:94
+OFF_PRODUCER_HEARTBEAT_MS: Final[int] = 0x0038       # atomic<u64> producer_heartbeat_ms      RingHeader.h:89
+OFF_XRUN_COUNT: Final[int] = 0x0040                  # atomic<u64> xrun_count                 RingHeader.h:90
+OFF_PRODUCER_META_BLOCK_PTS_NS: Final[int] = 0x0048  # atomic<u64> producer_meta_block_pts_ns RingHeader.h:91
+OFF_PRODUCER_STATE: Final[int] = 0x0050              # atomic<u32> producer_state       RingHeader.h:92
+OFF_SEQ: Final[int] = 0x0058                         # atomic<u64> seq                  RingHeader.h:93
+OFF_RESERVED: Final[int] = 0x0060                    # u8[0xFA0] _reserved (zero-init)  RingHeader.h:94
 
-# Consumer-attach-lock word, carved from _reserved at 0x0058 (RingHeader.h:131).
+# Consumer-attach-lock word, carved from _reserved at 0x0060 (wire v2, P-134) (RingHeader.h:131).
 # The producer zero-inits the whole _reserved span (→ lock reads 0 = "no
 # consumer") and NEVER writes it again; the consumer CAS-locks it.
-CONSUMER_LOCK_OFFSET: Final[int] = 0x0058  # kConsumerLockOffset  RingHeader.h:131
+CONSUMER_LOCK_OFFSET: Final[int] = 0x0060  # kConsumerLockOffset  RingHeader.h:131
 
 # Explicit little-endian struct formats (NEVER native — the wire is LE).
 _U64: Final[str] = "<Q"
@@ -157,7 +273,12 @@ class IpcRingSink:
 
         # Read-only header fields (written once at construction).
         buf = self._shm.buf
-        struct.pack_into(_U64, buf, OFF_MAGIC, SPE_RING_MAGIC)
+        # NOTE: `magic` is deliberately NOT written here — it is the consumer's
+        # attach latch (SharedRingBackend.cpp:150 reads it as a PLAIN load, then
+        # reads channels/capacity/block_size/sample_rate as plain loads and
+        # sizes its staging buffer from them). Writing magic FIRST published a
+        # ring whose geometry fields could still be zero. It is stored LAST,
+        # behind a release fence, at the end of this block.
         struct.pack_into(_U32, buf, OFF_VERSION, RING_HEADER_VERSION)
         struct.pack_into(_U32, buf, OFF_HEADER_SIZE, RING_HEADER_SIZE)
         struct.pack_into(_U32, buf, OFF_SAMPLE_RATE, self._sample_rate)
@@ -173,6 +294,11 @@ class IpcRingSink:
         struct.pack_into(_U64, buf, OFF_SEQ, 0)
         # First heartbeat stamped at construction (unix-epoch ms).
         struct.pack_into(_U64, buf, OFF_PRODUCER_HEARTBEAT_MS, _heartbeat_ms())
+
+        # RELEASE fence, then publish `magic` — the attach latch — LAST, so a
+        # consumer that sees a valid magic is guaranteed to see the geometry.
+        _fence()
+        struct.pack_into(_U64, buf, OFF_MAGIC, SPE_RING_MAGIC)
 
         # Per-channel planar ring views over shm.buf with EXPLICIT little-endian
         # dtype (np.dtype("<f4"), NOT native float32 — the wire is LE, D4). These
@@ -243,6 +369,12 @@ class IpcRingSink:
         # Free-space / xrun check FIRST (ADR §4.2). read_idx is the consumer's
         # progress (load); free = capacity - (write_idx - read_idx).
         read_idx = struct.unpack_from(_U64, buf, OFF_READ_IDX)[0]
+        # ACQUIRE half (A-14). Pairs with the consumer's
+        # `read_idx.store(release)` (SharedRingBackend.cpp:555), which it issues
+        # AFTER copying the samples out. The fence stops the ring writes below
+        # from being hoisted above this load, i.e. from overwriting a slot the
+        # consumer has not finished reading.
+        _fence()
         free = self._capacity - (self._write_idx - read_idx)
         if free < frames:
             # drop-newest: discard the INCOMING block, bump xrun_count, and do
@@ -270,10 +402,13 @@ class IpcRingSink:
         # (2) Stamp the per-block presentation timestamp (CLOCK_MONOTONIC ns).
         struct.pack_into(_U64, buf, OFF_PRODUCER_META_BLOCK_PTS_NS, time.monotonic_ns())
 
-        # Best-effort scheduler nudge — NOT a memory fence. On x86-64 (TSO) the
-        # prior sample/pts stores are visible-before the write_idx store below;
-        # ARM64 weak-memory ordering is PR6's concurrent-soak proof (P3).
-        os.sched_yield()
+        # RELEASE half (A-14). Every sample store (1) and the pts stamp (2) must
+        # be globally visible BEFORE the write_idx store (3) that publishes them
+        # — the consumer acquire-loads write_idx (SharedRingBackend.cpp:461) and
+        # then reads those very samples. This used to be `os.sched_yield()`,
+        # which is a scheduler hint and NOT a barrier: correct only by accident
+        # on x86-64 TSO, wrong on ARM64. See `_resolve_fence` above.
+        _fence()
 
         # (3) Publish write_idx LAST in strict program order (D-publish).
         self._write_idx += frames
@@ -292,6 +427,10 @@ class IpcRingSink:
 
     def _set_state(self, state: int) -> None:
         self._state = state
+        # RELEASE fence: the consumer acquire-loads producer_state
+        # (SharedRingBackend.cpp:434) and treats Closed(3) as "everything the
+        # producer ever wrote is now final".
+        _fence()
         struct.pack_into(_U32, self._shm.buf, OFF_PRODUCER_STATE, state)
 
     # ── lifecycle ──────────────────────────────────────────────────────────────

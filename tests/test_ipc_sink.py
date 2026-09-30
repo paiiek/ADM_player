@@ -49,12 +49,12 @@ L_CAPACITY_FRAMES = 0x001C
 L_WRITE_IDX = 0x0020
 L_READ_IDX = 0x0028
 L_PRODUCER_PID = 0x0030
-L_PRODUCER_HEARTBEAT_MS = 0x0034
-L_XRUN_COUNT = 0x003C
-L_PRODUCER_META_BLOCK_PTS_NS = 0x0044
-L_PRODUCER_STATE = 0x004C
-L_SEQ = 0x0050
-L_RESERVED = 0x0058
+L_PRODUCER_HEARTBEAT_MS = 0x0038
+L_XRUN_COUNT = 0x0040
+L_PRODUCER_META_BLOCK_PTS_NS = 0x0048
+L_PRODUCER_STATE = 0x0050
+L_SEQ = 0x0058
+L_RESERVED = 0x0060
 L_MAGIC_VALUE = 0x53504543484D4E47  # "SPECHMNG" LE u64 (RingHeader.h:25)
 
 _NAME_SEQ = 0
@@ -117,7 +117,7 @@ def test_header_layout_all_15_fields(name: str) -> None:
     try:
         buf = sink._shm.buf
         assert _u64(buf, L_MAGIC) == L_MAGIC_VALUE
-        assert _u32(buf, L_VERSION) == 1
+        assert _u32(buf, L_VERSION) == 2
         assert _u32(buf, L_HEADER_SIZE) == 4096
         assert _u32(buf, L_SAMPLE_RATE) == 48000
         assert _u32(buf, L_BLOCK_SIZE) == 256
@@ -416,29 +416,198 @@ def test_publish_order_write_idx_last(name: str, monkeypatch: pytest.MonkeyPatch
                 events.append("write_idx")
             return real_pack_into(fmt, buf, offset, *vals)
 
-        # Record the channel-copy as well by wrapping sched_yield (issued AFTER
-        # the copies + pts, BEFORE the write_idx store).
-        real_yield = os.sched_yield
+        # A-14: the ordering point is the RELEASE FENCE (issued AFTER the
+        # channel copies + pts, BEFORE the write_idx store), not the old
+        # `os.sched_yield()` — which was a scheduler hint, not a barrier.
+        real_fence = mod._fence
 
-        def recording_yield():
-            events.append("yield")
-            return real_yield()
+        def recording_fence():
+            events.append("fence")
+            return real_fence()
 
         monkeypatch.setattr(mod.struct, "pack_into", recording_pack_into)
-        monkeypatch.setattr(mod.os, "sched_yield", recording_yield)
+        monkeypatch.setattr(mod, "_fence", recording_fence)
 
         sink.write(np.ones((256, 2), dtype=np.float32))
 
-        # SOURCE order within write(): pts stamp → yield → write_idx LAST.
-        assert "pts" in events and "write_idx" in events and "yield" in events
-        assert events.index("pts") < events.index("yield") < events.index("write_idx"), (
-            f"publish program-order violated: {events}"
+        # SOURCE order within write(): acquire fence → pts stamp → RELEASE
+        # fence → write_idx LAST.
+        assert "pts" in events and "write_idx" in events and "fence" in events
+        pts, wi = events.index("pts"), events.index("write_idx")
+        release_fences = [k for k, e in enumerate(events) if e == "fence" and pts < k < wi]
+        assert release_fences, (
+            f"NO release fence between the pts stamp and the write_idx publish: {events}"
         )
-        # write_idx must be the LAST index store in the publish (nothing after it
-        # except seq/heartbeat which are not the publish point).
-        assert events.index("write_idx") == max(
-            events.index("pts"), events.index("yield"), events.index("write_idx")
+        assert pts < wi, f"publish program-order violated: {events}"
+        # write_idx must be the LAST publish store (nothing after it except
+        # seq/heartbeat, which are not the publish point).
+        assert wi == max(pts, wi)
+    finally:
+        sink.close()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# A-14 — the producer half of the release/acquire wire contract
+#
+# The C++ consumer (spatial_engine SharedRingBackend.cpp) is already correct:
+#   :461  write_idx.load(std::memory_order_acquire)
+#   :555  read_idx.store(..., std::memory_order_release)
+# These gates assert the PYTHON producer supplies the matching halves. Without
+# them the ring is ordered only by x86-64 TSO luck and tears on ARM64.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_fence_impl_is_a_real_barrier_on_weakly_ordered_machines() -> None:
+    """A silent downgrade to a no-op fence must be visible, and must be
+    impossible on an ISA that actually needs the barrier."""
+    import platform
+
+    import adm_player.ipc_sink as mod
+
+    assert callable(mod._fence)
+    mod._fence()  # must not raise
+
+    impl = mod.FENCE_IMPL
+    assert isinstance(impl, str) and impl, "FENCE_IMPL must name the mechanism"
+
+    if platform.machine() not in mod._TSO_MACHINES:
+        # ARM64 / POWER / RISC-V: a no-op fence here is the defect itself.
+        assert not impl.startswith("noop"), (
+            f"weakly-ordered machine {platform.machine()!r} resolved to a NO-OP "
+            f"fence ({impl!r}); the shm publish would be unordered"
         )
+
+
+def test_no_fence_on_weakly_ordered_machine_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No silent disarm: if no barrier primitive can be found, a weakly-ordered
+    machine must REFUSE to construct a ring rather than publish unordered."""
+    import ctypes
+
+    import adm_player.ipc_sink as mod
+
+    def no_libraries(*_a, **_k):
+        raise OSError("no libraries available (test)")
+
+    monkeypatch.setattr(ctypes, "CDLL", no_libraries)
+
+    monkeypatch.setattr(mod.platform, "machine", lambda: "aarch64")
+    with pytest.raises(RuntimeError, match="no cross-process memory fence"):
+        mod._resolve_fence()
+
+    # ...and on a store-ordered ISA the same situation is sound, so it degrades
+    # to a named no-op instead of raising.
+    monkeypatch.setattr(mod.platform, "machine", lambda: "x86_64")
+    fn, impl = mod._resolve_fence()
+    fn()
+    assert impl.startswith("noop-tso")
+
+
+def test_fence_precedes_magic_publish_at_construction(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`magic` is the consumer's attach latch and is read as a PLAIN load
+    (SharedRingBackend.cpp:150) before the geometry fields. It must therefore be
+    stored LAST, behind a release fence — otherwise a consumer can attach to a
+    ring whose channels/capacity are still zero."""
+    import adm_player.ipc_sink as mod
+
+    events: list[str] = []
+    real_pack_into = struct.pack_into
+    real_fence = mod._fence
+
+    def recording_pack_into(fmt, buf, offset, *vals):
+        if offset == L_MAGIC:
+            events.append("magic")
+        elif offset in (L_CHANNELS, L_CAPACITY_FRAMES, L_BLOCK_SIZE, L_SAMPLE_RATE):
+            events.append("geometry")
+        return real_pack_into(fmt, buf, offset, *vals)
+
+    def recording_fence():
+        events.append("fence")
+        return real_fence()
+
+    monkeypatch.setattr(mod.struct, "pack_into", recording_pack_into)
+    monkeypatch.setattr(mod, "_fence", recording_fence)
+
+    sink = IpcRingSink(name, sample_rate=48000, channels=2, block_size=256, ring_frames=8192)
+    try:
+        assert "magic" in events, events
+        magic = events.index("magic")
+        assert magic == len(events) - 1, f"magic must be the LAST header store: {events}"
+        assert "geometry" in events and events.index("geometry") < magic, (
+            f"geometry must be published BEFORE magic: {events}"
+        )
+        assert events[magic - 1] == "fence", (
+            f"magic must be published behind a release fence: {events}"
+        )
+    finally:
+        sink.close()
+
+
+def test_acquire_fence_between_read_idx_load_and_ring_write(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The producer's read_idx load must acquire, pairing with the consumer's
+    `read_idx.store(release)` — otherwise the ring writes below can be hoisted
+    above it and clobber a slot the consumer is still reading."""
+    import adm_player.ipc_sink as mod
+
+    sink = IpcRingSink(name, sample_rate=48000, channels=2, block_size=256, ring_frames=8192)
+    try:
+        events: list[str] = []
+        real_unpack_from = struct.unpack_from
+        real_fence = mod._fence
+
+        real_pack_into = struct.pack_into
+
+        def recording_unpack_from(fmt, buf, offset, *a, **k):
+            if offset == mod.OFF_READ_IDX:
+                events.append("read_idx")
+            return real_unpack_from(fmt, buf, offset, *a, **k)
+
+        def recording_pack_into(fmt, buf, offset, *vals):
+            # The pts stamp is issued AFTER the channel copies, so a fence
+            # recorded before it is the ACQUIRE fence, not the RELEASE one.
+            # Without this marker the gate cannot tell the two fences apart —
+            # it would pass with the acquire fence deleted (observed).
+            if offset == mod.OFF_PRODUCER_META_BLOCK_PTS_NS:
+                events.append("pts")
+            return real_pack_into(fmt, buf, offset, *vals)
+
+        def recording_fence():
+            events.append("fence")
+            return real_fence()
+
+        monkeypatch.setattr(mod.struct, "unpack_from", recording_unpack_from)
+        monkeypatch.setattr(mod.struct, "pack_into", recording_pack_into)
+        monkeypatch.setattr(mod, "_fence", recording_fence)
+
+        sink.write(np.ones((256, 2), dtype=np.float32))
+
+        assert "read_idx" in events and "pts" in events, events
+        ri, pts = events.index("read_idx"), events.index("pts")
+        assert ri < pts, events
+        acquire = [k for k, e in enumerate(events) if e == "fence" and ri < k < pts]
+        assert acquire, (
+            f"no ACQUIRE fence between the read_idx load and the ring writes "
+            f"(the fence seen later is the RELEASE fence): {events}"
+        )
+    finally:
+        sink.close()
+
+
+def test_write_path_issues_no_sched_yield(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The old `os.sched_yield()` must be gone: it never was a barrier, and on
+    the audio path a voluntary yield is a latency hazard (ADR 0019 §4.2 — the
+    write path must never block)."""
+    import adm_player.ipc_sink as mod
+
+    sink = IpcRingSink(name, sample_rate=48000, channels=2, block_size=256, ring_frames=8192)
+    try:
+        yields = []
+        monkeypatch.setattr(mod.os, "sched_yield", lambda: yields.append(1))
+        sink.write(np.ones((256, 2), dtype=np.float32))
+        assert yields == [], "write() still calls os.sched_yield()"
     finally:
         sink.close()
 
@@ -464,7 +633,7 @@ def test_publish_serialized_read_below_write_idx_is_complete(name: str) -> None:
             sink.write(np.ascontiguousarray(block))
             widx = _u64(buf, 0x0020)
             assert widx == base + block_size
-            pts = _u64(buf, 0x0044)
+            pts = _u64(buf, L_PRODUCER_META_BLOCK_PTS_NS)
             assert pts != 0, "producer_meta_block_pts_ns must be non-zero after a write"
             assert pts >= last_pts, "pts must be monotonic across published blocks"
             last_pts = pts
@@ -511,8 +680,8 @@ def test_round_trip_one_second_sample_exact(name: str) -> None:
         assert np.array_equal(recovered, src), "round-trip not sample-exact (+/-0)"
         # seq incremented once per block; xrun_count == 0 (consumer kept up).
         n_blocks = (total + block_size - 1) // block_size
-        assert _u64(buf, 0x0050) == n_blocks, "seq must increment once per block"
-        assert _u64(buf, 0x003C) == 0, "no xrun when the consumer keeps up"
+        assert _u64(buf, L_SEQ) == n_blocks, "seq must increment once per block"
+        assert _u64(buf, L_XRUN_COUNT) == 0, "no xrun when the consumer keeps up"
     finally:
         sink.close()
 

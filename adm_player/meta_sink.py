@@ -39,7 +39,11 @@ _log = logging.getLogger(__name__)
 # "SPEMETA1" LE u64 (MetaRingHeader.h:32)
 SPE_META_MAGIC: Final[int] = 0x5350454D45544131
 META_HEADER_SIZE: Final[int] = 4096  # kMetaRingHeaderSize (MetaRingHeader.h:33)
-META_HEADER_VERSION: Final[int] = 1  # kMetaRingVersion    (MetaRingHeader.h:34)
+META_HEADER_VERSION: Final[int] = 2  # kMetaRingVersion (wire v2, P-137; v1 is refused by the engine)
+# kMetaLayoutHash: FNV-1a-64 of kMetaContractDescriptor (MetaRingHeader.h). DERIVED
+# on the engine side (`python3 scripts/meta_layout_hash.py`); stamped at
+# OFF_LAYOUT_HASH so the engine admits the segment (0 = unstamped => refused).
+META_LAYOUT_HASH: Final[int] = 0x9F317DE56F623BC6
 
 # MetaProducerState enum (MetaRingHeader.h:38-43)
 STATE_IDLE: Final[int] = 0       # MetaRingHeader.h:39
@@ -57,7 +61,8 @@ META_COORD_CART: Final[int] = 1   # a0=x,  a1=y,  a2=z    (MetaRingHeader.h:53)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MetaRingHeader field byte offsets (MetaRingHeader.h:129-146 table / :150-166
-# struct / :170-186 static_asserts). All fields little-endian (#pragma pack(1)).
+# struct / static_asserts). All fields little-endian. Wire v2 (P-137): natural
+# alignment, explicit zero pads at 0x34 and 0x4C, no pragma pack.
 # ─────────────────────────────────────────────────────────────────────────────
 OFF_MAGIC: Final[int] = 0x0000            # u64          magic           MetaRingHeader.h:151
 OFF_VERSION: Final[int] = 0x0008          # u32          version         MetaRingHeader.h:152
@@ -69,12 +74,14 @@ OFF_RECORD_SIZE: Final[int] = 0x001C      # u32          record_size     MetaRin
 OFF_WRITE_IDX: Final[int] = 0x0020        # atomic<u64>  write_idx       MetaRingHeader.h:158
 OFF_READ_IDX: Final[int] = 0x0028         # atomic<u64>  read_idx        MetaRingHeader.h:159
 OFF_PRODUCER_PID: Final[int] = 0x0030     # u32          producer_pid    MetaRingHeader.h:160
-# The three UNALIGNED (4-mod-8) hot-path atomics — do NOT 8-align them.
-OFF_HEARTBEAT_MS: Final[int] = 0x0034     # atomic<u64>  heartbeat_ms    MetaRingHeader.h:161
-OFF_XRUN_COUNT: Final[int] = 0x003C       # atomic<u64>  xrun_count      MetaRingHeader.h:162
-OFF_PRODUCER_STATE: Final[int] = 0x0044   # atomic<u32>  producer_state  MetaRingHeader.h:163
-OFF_SEQ: Final[int] = 0x0048              # atomic<u64>  seq             MetaRingHeader.h:164
-OFF_RESERVED: Final[int] = 0x0050         # u8[0xFB0]    _reserved       MetaRingHeader.h:165
+OFF_PAD0: Final[int] = 0x0034             # u32          _pad0 (zero)
+OFF_HEARTBEAT_MS: Final[int] = 0x0038     # atomic<u64>  heartbeat_ms
+OFF_XRUN_COUNT: Final[int] = 0x0040       # atomic<u64>  xrun_count
+OFF_PRODUCER_STATE: Final[int] = 0x0048   # atomic<u32>  producer_state
+OFF_PAD1: Final[int] = 0x004C             # u32          _pad1 (zero)
+OFF_SEQ: Final[int] = 0x0050              # atomic<u64>  seq
+OFF_LAYOUT_HASH: Final[int] = 0x0058      # u64          layout_hash (== META_LAYOUT_HASH)
+OFF_RESERVED: Final[int] = 0x0060         # u8[0xFA0]    _reserved
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MetaRecord field byte offsets (MetaRingHeader.h:73-86 table / :90-104 struct /
@@ -216,6 +223,7 @@ class MetaRingSink:
         struct.pack_into(_U64, buf, OFF_XRUN_COUNT, 0)
         struct.pack_into(_U32, buf, OFF_PRODUCER_STATE, STATE_IDLE)
         struct.pack_into(_U64, buf, OFF_SEQ, 0)
+        struct.pack_into(_U64, buf, OFF_LAYOUT_HASH, META_LAYOUT_HASH)
         # First heartbeat stamped at construction (unix-epoch ms).
         struct.pack_into(_U64, buf, OFF_HEARTBEAT_MS, _heartbeat_ms())
         del buf  # drop the local memoryview before any close() can run.

@@ -37,11 +37,15 @@ L_RECORD_SIZE = 0x001C
 L_WRITE_IDX = 0x0020
 L_READ_IDX = 0x0028
 L_PRODUCER_PID = 0x0030
-L_HEARTBEAT_MS = 0x0034
-L_XRUN_COUNT = 0x003C
-L_PRODUCER_STATE = 0x0044
-L_SEQ = 0x0048
-L_RESERVED = 0x0050
+L_PAD0 = 0x0034  # wire v2 (P-137): natural alignment, explicit zero pads
+L_HEARTBEAT_MS = 0x0038
+L_XRUN_COUNT = 0x0040
+L_PRODUCER_STATE = 0x0048
+L_PAD1 = 0x004C
+L_SEQ = 0x0050
+L_LAYOUT_HASH = 0x0058
+L_RESERVED = 0x0060
+L_LAYOUT_HASH_VALUE = 0x9F317DE56F623BC6  # kMetaLayoutHash (MetaRingHeader.h, v2)
 L_MAGIC_VALUE = 0x5350454D45544131  # "SPEMETA1" LE u64 (MetaRingHeader.h:32)
 
 # Record table MetaRingHeader.h:73-86 / struct :90-104 / static_asserts :108-121.
@@ -103,7 +107,7 @@ def test_header_layout_all_fields(name: str) -> None:
     try:
         buf = sink._shm.buf
         assert _u64(buf, L_MAGIC) == L_MAGIC_VALUE
-        assert _u32(buf, L_VERSION) == 1
+        assert _u32(buf, L_VERSION) == 2
         assert _u32(buf, L_HEADER_SIZE) == 4096
         assert _u32(buf, L_SAMPLE_RATE) == 48000
         assert _u32(buf, L_SLOT_COUNT) == 128
@@ -118,6 +122,8 @@ def test_header_layout_all_fields(name: str) -> None:
         assert _u64(buf, L_XRUN_COUNT) == 0
         assert _u32(buf, L_PRODUCER_STATE) == 0  # Idle
         assert _u64(buf, L_SEQ) == 0
+        assert _u64(buf, L_LAYOUT_HASH) == L_LAYOUT_HASH_VALUE
+        assert _u32(buf, L_PAD0) == 0 and _u32(buf, L_PAD1) == 0
     finally:
         sink.close()
 
@@ -125,7 +131,7 @@ def test_header_layout_all_fields(name: str) -> None:
 def test_reserved_zero_after_init(name: str) -> None:
     sink = MetaRingSink(name, sample_rate=48000, slot_count=64, record_capacity=256)
     try:
-        # _reserved spans 0x50 → 0x1000 (the rest of the 4096-byte header).
+        # _reserved spans 0x60 → 0x1000 (the rest of the 4096-byte header).
         reserved = bytes(sink._shm.buf[L_RESERVED:0x1000])
         assert reserved == b"\x00" * (0x1000 - L_RESERVED), "_reserved must be all-zero after init"
     finally:
