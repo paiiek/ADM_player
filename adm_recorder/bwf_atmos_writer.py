@@ -47,6 +47,11 @@ _BED_SPEAKER_DOLBY: dict[str, tuple[str, str, tuple[float, float, float]]] = {
     "Rtf": ("RoomCentricRightTopFront", "RC_Rtf", (1.0, 1.0, 1.0)),
     "Ltr": ("RoomCentricLeftTopRear", "RC_Ltr", (-1.0, -1.0, 1.0)),
     "Rtr": ("RoomCentricRightTopRear", "RC_Rtr", (1.0, -1.0, 1.0)),
+    # Lane F — 9.1.6 wide-front + top-middle pairs (DAMF).
+    "Lw": ("RoomCentricLeftWide", "RC_Lw", (-1.0, 0.5, 0.0)),
+    "Rw": ("RoomCentricRightWide", "RC_Rw", (1.0, 0.5, 0.0)),
+    "Ltm": ("RoomCentricLeftTopMiddle", "RC_Ltm", (-1.0, 0.0, 1.0)),
+    "Rtm": ("RoomCentricRightTopMiddle", "RC_Rtm", (1.0, 0.0, 1.0)),
     # Tfl/Tfr alias to Top Front pair (same role as Ltf/Rtf in 7.1.2 layouts)
     "Tfl": ("RoomCentricLeftTopFront", "RC_Ltf", (-1.0, 1.0, 1.0)),
     "Tfr": ("RoomCentricRightTopFront", "RC_Rtf", (1.0, 1.0, 1.0)),

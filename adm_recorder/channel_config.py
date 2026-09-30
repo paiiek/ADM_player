@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar
@@ -18,6 +19,66 @@ class BedLayout:
     label: str
     # (label, x, y, z)
     speakers: tuple[tuple[str, float, float, float], ...]
+
+
+# ── Lane F — canonical ADM/Atmos bed sets (SHARED with the live engine) ───────
+# These five formats mirror core/src/render/BedLayouts.{h,cpp} BYTE-FOR-BYTE (a
+# parity gate, test_bed_table_parity, binds them: labels + order + x/y/z @1e-4).
+# Author both sides from the SAME (azimuth°, elevation°) Dolby Home / DAMF +
+# ITU-R BS.775 specs and derive the ADM-Cartesian x/y/z with the identical
+# formula (front +Y, right +X, up +Z):
+#     x = sin(az)·cos(el),  y = cos(az)·cos(el),  z = sin(el)
+# The LFE carries a nominal front-center placeholder (az0/el0 → (0,1,0)); it is
+# NEVER panned — the engine routes it via an equal-power omni fan-out (§5).
+# NOTE: the LEGACY object-cube tables (5_1 / 7_1) are intentionally left
+# untouched (different, older positions); only the bed sets below are DAMF-exact.
+def _bed_speaker(label: str, az_deg: float, el_deg: float) -> tuple[str, float, float, float]:
+    az = math.radians(az_deg)
+    el = math.radians(el_deg)
+    return (label, math.sin(az) * math.cos(el), math.cos(az) * math.cos(el), math.sin(el))
+
+
+# (label, az°, el°) in Dolby channel order. LFE spec = (0, 0) → (0,1,0) placeholder.
+_BED_SPECS: dict[str, tuple[tuple[str, float, float], ...]] = {
+    "5_1_2": (
+        ("L", -30, 0), ("R", 30, 0), ("C", 0, 0), ("LFE", 0, 0),
+        ("Ls", -110, 0), ("Rs", 110, 0), ("Ltf", -45, 45), ("Rtf", 45, 45),
+    ),
+    "5_1_4": (
+        ("L", -30, 0), ("R", 30, 0), ("C", 0, 0), ("LFE", 0, 0),
+        ("Ls", -110, 0), ("Rs", 110, 0), ("Ltf", -45, 45), ("Rtf", 45, 45),
+        ("Ltr", -135, 45), ("Rtr", 135, 45),
+    ),
+    "7_1_2": (
+        ("L", -30, 0), ("R", 30, 0), ("C", 0, 0), ("LFE", 0, 0),
+        ("Lss", -90, 0), ("Rss", 90, 0), ("Lrs", -135, 0), ("Rrs", 135, 0),
+        ("Ltf", -45, 45), ("Rtf", 45, 45),
+    ),
+    "7_1_4": (
+        ("L", -30, 0), ("R", 30, 0), ("C", 0, 0), ("LFE", 0, 0),
+        ("Lss", -90, 0), ("Rss", 90, 0), ("Lrs", -135, 0), ("Rrs", 135, 0),
+        ("Ltf", -45, 45), ("Rtf", 45, 45), ("Ltr", -135, 45), ("Rtr", 135, 45),
+    ),
+    # 9.1.6 channel ORDER is the single source of truth for the ADM fixture +
+    # the C++ table (test_bed_table_parity pins C++ ↔ this order).
+    "9_1_6": (
+        ("L", -30, 0), ("R", 30, 0), ("C", 0, 0), ("LFE", 0, 0),
+        ("Lss", -90, 0), ("Rss", 90, 0), ("Lrs", -135, 0), ("Rrs", 135, 0),
+        ("Lw", -60, 0), ("Rw", 60, 0), ("Ltf", -45, 45), ("Rtf", 45, 45),
+        ("Ltm", -90, 45), ("Rtm", 90, 45), ("Ltr", -135, 45), ("Rtr", 135, 45),
+    ),
+}
+
+_BED_LABELS: dict[str, str] = {
+    "5_1_2": "5.1.2 (8)", "5_1_4": "5.1.4 (10)", "7_1_2": "7.1.2 (10)",
+    "7_1_4": "7.1.4 (12)", "9_1_6": "9.1.6 (16)",
+}
+
+
+def _bed_layout(bid: str) -> BedLayout:
+    specs = _BED_SPECS[bid]
+    return BedLayout(bid, _BED_LABELS[bid],
+                     tuple(_bed_speaker(lbl, az, el) for (lbl, az, el) in specs))
 
 
 # Dolby/ITU-normalized positions (aligned with in-app OSC/playback axes)
@@ -53,40 +114,12 @@ _LAYOUTS: tuple[BedLayout, ...] = (
             ("Rsr", 0.9, -0.9, 0.0),
         ),
     ),
-    BedLayout(
-        "7_1_2",
-        "7.1.2 (10)",
-        (
-            ("L", -0.9, 0.9, 0.0),
-            ("R", 0.9, 0.9, 0.0),
-            ("C", 0.0, 1.0, 0.0),
-            ("LFE", 0.0, 0.5, -0.2),
-            ("Lss", -0.95, 0.0, 0.0),
-            ("Rss", 0.95, 0.0, 0.0),
-            ("Lsr", -0.9, -0.9, 0.0),
-            ("Rsr", 0.9, -0.9, 0.0),
-            ("Tfl", -0.5, 0.7, 0.75),
-            ("Tfr", 0.5, 0.7, 0.75),
-        ),
-    ),
-    BedLayout(
-        "7_1_4",
-        "7.1.4 (12)",
-        (
-            ("L", -0.9, 0.9, 0.0),
-            ("R", 0.9, 0.9, 0.0),
-            ("C", 0.0, 1.0, 0.0),
-            ("LFE", 0.0, 0.5, -0.2),
-            ("Lss", -0.95, 0.0, 0.0),
-            ("Rss", 0.95, 0.0, 0.0),
-            ("Lsr", -0.9, -0.9, 0.0),
-            ("Rsr", 0.9, -0.9, 0.0),
-            ("Ltf", -0.7, 0.5, 0.75),
-            ("Rtf", 0.7, 0.5, 0.75),
-            ("Ltr", -0.7, -0.5, 0.75),
-            ("Rtr", 0.7, -0.5, 0.75),
-        ),
-    ),
+    # Lane F — DAMF-exact bed sets (mirror core/src/render/BedLayouts; parity-gated).
+    _bed_layout("5_1_2"),
+    _bed_layout("5_1_4"),
+    _bed_layout("7_1_2"),
+    _bed_layout("7_1_4"),
+    _bed_layout("9_1_6"),
     BedLayout(
         "objects_only",
         "Objects only (0 bed)",
