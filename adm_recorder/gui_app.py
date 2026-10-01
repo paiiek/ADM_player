@@ -61,6 +61,7 @@ from .osc_control import OscControlBridge, start_osc_control_server
 from .osc_ingest import OscIngestRouter, start_osc_server
 from .osc_record_throttle import OSC_POSITION_RECORD_HZ, make_position_callback
 from .sys_warning import parse_sys_warning_args as _parse_sys_warning_args
+from .warning_catalog import format_engine_warning as _format_engine_warning
 from .timeline_store import ObjectBlock, TimelineStore, events_to_object_blocks
 
 # Dark UI aligned with ADM Player
@@ -847,7 +848,8 @@ class MainWindow(QMainWindow):
             self._engine_warning_bridge.warning.emit(category, detail)
 
     def _on_engine_warning(self, category: str, detail: str) -> None:
-        message = f"{category} ({detail})" if detail else category
+        # P-175: the catalog title, with the raw code + detail kept in parens.
+        message = _format_engine_warning(category, detail)
         self._log_ui("WARN", f"/sys/warning: {message}")
         self._status.showMessage(f"Engine warning: {message}", 8000)
 

@@ -30,6 +30,7 @@ include = ["adm_player*", "adm_recorder*"]
 
 [tool.setuptools.package-data]
 adm_player = ["resources/LOGO_White.png"]
+adm_recorder = ["warning_titles.json"]
 
 # Version is derived from git tags via setuptools_scm. If the working tree is
 # not a git checkout (e.g. a downloaded tarball, or `pip install` from a zip),

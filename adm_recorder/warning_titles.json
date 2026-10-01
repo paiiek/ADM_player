@@ -1,0 +1,550 @@
+{
+ "schema": 1,
+ "_comment": "VENDORED from spatial_engine ui/warning_catalog.json (titles only). Do not edit by hand: scripts/sync_warning_titles.py --write.",
+ "source_commit": "e96185c7",
+ "source_sha256": "f12f56fd7e48e53ae25266cda20370ca47f340c7d8ea236f6b6e23b519e0a148",
+ "codes": {
+  "algo_selection_refused": {
+   "title": "요청한 렌더러를 이 빌드 또는 이 레이아웃에서 실행할 수 없어 /obj/algo 또는 /sys/algo_swap 이 거절되었습니다 (detail=틱 동안 거절 횟수)"
+  },
+  "ambi_decoder_rebuild_deferred": {
+   "title": "오디오 콜백이 멈춰 앰비소닉 디코드 행렬 재구성이 보류되었습니다 — 아직 이전 디코더(arg1)로 듣고 있습니다",
+   "title_en": "The audio callback stalled, so the ambisonic decode-matrix rebuild was deferred — you are still hearing the previous decoder (arg1)"
+  },
+  "ambi_decoder_rebuild_deferred_cleared": {
+   "title": "앰비소닉 디코드 행렬 재구성 보류가 해제되었습니다 (arg1=지금 적용된 디코더, detail=rebuild_landed)",
+   "title_en": "The deferred ambisonic decode-matrix rebuild has landed (arg1 = the decoder now applied, detail = rebuild_landed)"
+  },
+  "ambi_order_capped": {
+   "title": "요청한 앰비소닉 차수가 스피커 수에 의해 낮은 차수로 제한되었습니다 (arg1=요청 차수)"
+  },
+  "ambi_order_underdetermined": {
+   "title": "활성 앰비소닉 차수에 필요한 스피커보다 리그 스피커가 적어 요청한 디코더 대신 ALLRAD 로 디코드 중입니다 (arg0=스피커, arg1=필요)"
+  },
+  "ambi_rig_rank_deficient": {
+   "title": "스피커 수는 충분하지만 배치가 해당 차수를 스팬하지 못해 앰비소닉 디코드가 최소제곱 투영으로 동작합니다 (arg1=스팬 가능한 차수)"
+  },
+  "ambivs_demoted_runtime": {
+   "title": "바이노럴 AmbiVS(B2) 처리가 8 블록 연속 블록 마감의 90 % 를 넘어 Direct(B1) 로 자동 강등되었습니다 (다음 prepareToPlay 까지 유지)"
+  },
+  "ambivs_disabled_cpu": {
+   "title": "바이노럴 AmbiVS(B2) CPU 처리량 프로브가 실시간 여유 미달이라 Direct(B1) 로 강등되어 동작합니다 (payload=측정 처리량 ×RT)"
+  },
+  "audio_backend_swap_not_applied": {
+   "title": "오디오 백엔드 교체가 적용되지 않았습니다 — 거부·롤백·null 대체 중 하나입니다 (detail=사유)",
+   "title_en": "The audio backend swap was not applied — it was refused, rolled back, or fell back to null (detail = reason)"
+  },
+  "audio_backend_swap_retry_failed": {
+   "title": "교체 후 OSC 재바인드를 위한 백엔드 재시도가 실패했습니다 (detail=사유)",
+   "title_en": "The backend retry that re-binds OSC after a swap failed (detail = reason)"
+  },
+  "audio_restart_attempted": {
+   "title": "오디오 정지(audio_stalled) 후 워치독이 핫스왑 경로로 디바이스 재시작을 시도했습니다 (arg0=지금까지 재시작 횟수)",
+   "title_en": "After an audio_stalled, the self-watchdog attempted a device restart via the hot-swap path (arg0 = restarts so far)"
+  },
+  "audio_resumed": {
+   "title": "오디오 콜백이 정지 후 재개되어 출력 뮤트가 해제되었습니다",
+   "title_en": "Audio callbacks resumed after a stall; output unmuted"
+  },
+  "audio_stalled": {
+   "title": "디바이스는 실행 중이라고 보고하는데 오디오 콜백이 정지되어(arg0=정지 경과 ms) 출력이 즉시 뮤트되었습니다",
+   "title_en": "The device claims it is running but audio callbacks have stalled (arg0 = stall age in ms) — output was muted immediately"
+  },
+  "auxsend_bad_idx": {
+   "title": "/obj/auxsend 의 send 인덱스에 목적지 버스가 없어 거절되었습니다 (arg0=요청 인덱스)"
+  },
+  "bed_channels_unfed": {
+   "title": "입력이 연결되지 않은 베드 채널이 있어 해당 채널이 무음으로 렌더되고 있습니다 (arg0=미연결 수, arg1=armed 수)"
+  },
+  "bed_format_ambiguous": {
+   "title": "/bed/format 이 두 가지로 읽히는 모호한 레이아웃 토큰이라 거절되었습니다 (detail=요청 토큰)"
+  },
+  "bed_format_unknown": {
+   "title": "/bed/format 이 이 빌드가 모르는 포맷이라 거절되었습니다 (detail=요청 토큰)"
+  },
+  "bed_slot_write_refused": {
+   "title": "오브젝트 단위 명령이 베드로 무장된 슬롯을 겨냥해 거절되었습니다 (arg0=틱 동안 거절 수)"
+  },
+  "bed_wav_offset_negative": {
+   "title": "/bed/wav 의 프레임 오프셋이 음수라 거절되었습니다 (arg0=요청 오프셋)"
+  },
+  "binaural_fallback_cleared": {
+   "title": "바이노럴 폴백(무음)이 해제되었습니다 (detail=원인: hrtf_loaded 또는 binaural_disabled)",
+   "title_en": "The binaural fallback (silent bus) has ended (detail = cause: hrtf_loaded or binaural_disabled)"
+  },
+  "binaural_fallback_muted": {
+   "title": "바이노럴 모니터가 켜져 있지만 HRTF 가 없어 바이노럴 버스가 무음입니다 (detail=로드 실패 사유)",
+   "title_en": "The binaural monitor is on but no HRTF is loaded, so the binaural bus is SILENT (detail = load-failure reason)"
+  },
+  "binaural_over_budget": {
+   "title": "바이노럴 모니터의 추정 연산량이 블록 예산의 80 %를 넘었습니다 — 오디오 데드라인을 놓칩니다 (detail=추정 µs, 예산 대비 %, 컨볼버 수 × 탭 수)",
+   "title_en": "The binaural monitor's estimated cost exceeds 80 % of the block budget, so audio deadlines will be missed (detail = estimated µs, % of budget, convolvers × taps)"
+  },
+  "binaural_over_budget_cleared": {
+   "title": "바이노럴 예산 초과 경고가 해제되었습니다 (detail=원인: under_budget, binaural_disabled 또는 hrtf_unloaded)",
+   "title_en": "The binaural over-budget warning has ended (detail = cause: under_budget, binaural_disabled or hrtf_unloaded)"
+  },
+  "binaural_reload_refused": {
+   "title": "바이노럴 모니터의 HRIR 재로드가 거절되었습니다 — 해당 컨볼버는 이전 방향을 유지하고, 같은 방향이 다음 블록에 다시 요청됩니다(오브젝트·widen 은 매 블록, 헤일로는 거절된 방향을 캐시하지 않음, 지연 요청은 재대기) (detail=refused=이번 틱 거절 수 total=누적)",
+   "title_en": "A binaural HRIR reload was refused; that convolver keeps its previous direction, and the same direction is requested again on the next block (objects and widen every block; the halo does not cache a refused direction; a deferred request re-queues itself) (detail = refused=<this tick> total=<cumulative>)"
+  },
+  "binaural_render_no_hrtf": {
+   "title": "HRTF 가 로드되지 않아 바이노럴 버스(--wav-binaural / --binaural-out)가 무음으로 렌더되고 있습니다",
+   "title_en": "No HRTF is loaded, so the binaural bus (--wav-binaural / --binaural-out) is rendering SILENCE"
+  },
+  "binaural_render_no_hrtf_cleared": {
+   "title": "HRTF 가 로드되어 바이노럴 버스 무음 상태가 해제되었습니다 (detail=원인: hrtf_loaded)",
+   "title_en": "An HRTF is now loaded, so the binaural bus is no longer rendering silence (detail = cause: hrtf_loaded)"
+  },
+  "binaural_seam_bank_over_cap": {
+   "title": "활성 HRTF 세트가 seam bank 상한보다 커서 bank 가 없습니다 — 움직이는 바이노럴 오브젝트의 seam 이 오디오 스레드에서 기준 경로(min-phase 분해)로 계산됩니다 (arg0=필요 MiB, arg1=상한 MiB)",
+   "title_en": "The active HRTF set is larger than the seam-bank ceiling, so it has no bank — moving binaural objects compute their seam on the audio thread by the reference path (min-phase decompose) (arg0 = MiB needed, arg1 = ceiling MiB)"
+  },
+  "binaural_seam_bank_over_cap_cleared": {
+   "title": "seam bank 상한 초과 경고가 해제되었습니다 (detail=원인: bank_built 또는 hrtf_unloaded)",
+   "title_en": "The seam-bank over-cap warning has ended (detail = cause: bank_built or hrtf_unloaded)"
+  },
+  "binaural_sofa_catalog_empty": {
+   "title": "HRTF 카탈로그가 비어 있어 /sys/binaural_sofa_select 가 아무것도 하지 않습니다 (detail=요청 이름)"
+  },
+  "binaural_sofa_empty_path": {
+   "title": "/sys/binaural_sofa 에 빈 경로가 와서 아무 HRTF 도 무장되지 않았습니다"
+  },
+  "binaural_sofa_entry_no_path": {
+   "title": "카탈로그에 이름은 있지만 파일이 없는 HRTF 항목입니다 (auto-fetch 미완료) (detail=이름)"
+  },
+  "binaural_sofa_file_missing": {
+   "title": "선택한 HRTF 파일이 디스크에 없습니다 (detail=경로) — 로드는 시도되며 그 결과가 최종 판정입니다"
+  },
+  "binaural_sofa_load_failed": {
+   "title": "런타임 HRTF 로드가 실패해 이전 HRTF 가 그대로 동작 중입니다 (detail=로더 사유: sample_rate_mismatch / file_not_found / ir_length_unsupported …)"
+  },
+  "binaural_sofa_unknown_name": {
+   "title": "/sys/binaural_sofa_select 에 카탈로그에 없는 이름이 왔습니다 (detail=이름)"
+  },
+  "binaural_widen_over_cap": {
+   "title": "바이노럴 모니터 widen 풀(arg0=K)이 가득 차 초과 오브젝트는 점(point) 경로로 렌더됩니다 (detail=초과 수)"
+  },
+  "calibration": {
+   "title": "캘리브레이션 적용 통지: 음수 채널 오프셋을 실현하려고 모든 출력에 공통 지연이 추가되었거나, 세트가 거절/부분 적용되었습니다 (detail 참조, arg1=채널 수)"
+  },
+  "calibration_auto_cleared": {
+   "title": "스피커→디바이스 패치가 활성화되어 캘리브레이션이 자동 해제되었습니다 (detail=사유)",
+   "title_en": "Calibration was cleared automatically because a speaker->device patch became active (detail = reason)"
+  },
+  "command_dropped_ring_full": {
+   "title": "오디오 스레드 명령 FIFO 가 가득 차 명령이 버려졌습니다 (arg1=명령 태그) — 적용도 에코도 되지 않았습니다",
+   "title_en": "The audio-thread command FIFO was full and a command was DROPPED (arg1 = command tag) — it was neither applied nor echoed"
+  },
+  "command_dropped_ring_full_coalesced": {
+   "title": "오디오 스레드에서 추가로 버려진 명령이 있습니다 (detail=건수) — 개별 경고는 보류되었습니다",
+   "title_en": "Further commands were dropped on the audio thread (detail = how many) — their individual warnings were withheld"
+  },
+  "control_loop_resumed": {
+   "title": "제어 루프가 다시 동작하여 systemd WATCHDOG=1 핑이 재개되었습니다"
+  },
+  "control_loop_stalled": {
+   "title": "제어 루프가 멈춰 systemd WATCHDOG=1 핑을 보류하고 있습니다 (arg1=정지 경과 ms) — WatchdogSec 이 서비스를 재시작합니다",
+   "title_en": "The control loop has stalled, so the systemd WATCHDOG=1 ping is being WITHHELD (arg1 = stall age in ms) — WatchdogSec will restart the service"
+  },
+  "cue_list_boot_rejected": {
+   "title": "부팅 시 cuelist.json 이 거부되어 빈 큐 리스트로 시작했습니다 (detail=경로와 사유)",
+   "title_en": "cuelist.json was rejected at boot, so the engine started with an empty cue list (detail = path and reason)"
+  },
+  "cue_list_not_persisted": {
+   "title": "새 큐 리스트를 적용했지만 디스크에 저장하지 못했습니다 — 재시작하면 사라집니다",
+   "title_en": "A new cue list was adopted but could not be saved to disk — it will be LOST on restart"
+  },
+  "cue_list_rejected": {
+   "title": "큐 리스트 불러오기가 거부되었습니다 (detail=사유) — 기존 큐 리스트가 유지됩니다",
+   "title_en": "A cue list load was rejected (detail = reason) — the previous cue list stays in force"
+  },
+  "curve_load_rejected": {
+   "title": "커브 레인 불러오기가 거부되었습니다 — 이전 커브가 유지됩니다 (detail=사유)",
+   "title_en": "A curve-lane load was rejected — the previous curves stay in force (detail = reason)"
+  },
+  "denormal_guard_off": {
+   "title": "오디오 콜백이 FTZ/DAZ 가 꺼진 채로 종료된 블록이 있습니다 (arg0=블록 수) — 조용한 구간에서 디노멀 스톨 가능"
+  },
+  "device_block_oversized": {
+   "title": "오디오 백엔드가 준비된 최대 블록보다 큰 콜백을 전달했습니다 (arg1=관측된 최대 프레임 수)",
+   "title_en": "The audio backend delivered a callback larger than the prepared maximum block (arg1 = largest frame count observed)"
+  },
+  "downmix_5_1_unimplemented": {
+   "title": "5.1 다운믹스 모니터가 요청되었지만 미구현이라 스테레오 폴드로 동작합니다"
+  },
+  "drain_dead": {
+   "title": "OSC 아웃바운드 드레인 스레드가 멈춰 텔레메트리/경고가 전선에 도달하지 못할 수 있습니다 (arg0=재시작 횟수)",
+   "title_en": "The OSC outbound drain thread is dead — telemetry and warnings may not be reaching the wire (arg0 = restart count)"
+  },
+  "drain_resumed": {
+   "title": "OSC 아웃바운드 드레인 스레드가 다시 정상 동작합니다",
+   "title_en": "The OSC outbound drain thread is passing again"
+  },
+  "echo_rate_limited": {
+   "title": "에코 전송이 초당 예산을 넘어 일부 프레임이 버려졌습니다 (detail=버린 개수)",
+   "title_en": "The echo stream exceeded its per-second budget and some frames were dropped (detail = how many)"
+  },
+  "engine_notice": {
+   "title": "엔진 공지 (구조화 코드 없는 문장형 경고 — 본문이 전체 내용입니다)"
+  },
+  "filter_state_recovered_calib_eq": {
+   "title": "캘리브레이션 EQ 필터 상태가 발산해 리셋·복구되었습니다 (arg0=건수)"
+  },
+  "filter_state_recovered_group_eq": {
+   "title": "그룹 EQ 필터 상태가 발산해 리셋·복구되었습니다 (arg0=건수)"
+  },
+  "filter_state_recovered_master_eq": {
+   "title": "마스터 EQ 필터 상태가 발산해 리셋·복구되었습니다 (arg0=건수)"
+  },
+  "filter_state_recovered_obj_eq": {
+   "title": "오브젝트 EQ 필터 상태가 발산(NaN/Inf)해 리셋·복구되었습니다 (arg0=건수)"
+  },
+  "filter_state_recovered_output_eq": {
+   "title": "출력 EQ 필터 상태가 발산해 리셋·복구되었습니다 (arg0=건수)"
+  },
+  "handshake_version_unsupported": {
+   "title": "클라이언트 스키마 버전이 엔진 지원 범위 밖이라 핸드셰이크가 거절되었습니다 (arg0=클라이언트, arg1=엔진) — 에코 구독 없음",
+   "title_en": "The handshake was REFUSED: the client's schema version is outside the range this engine supports (arg0 = client, arg1 = engine) — no echo subscription"
+  },
+  "inbound_mailbox_full": {
+   "title": "제어 스레드 인바운드 메일박스가 가득 차 큐/씬 명령이 버려졌습니다 (detail=dropped/total)",
+   "title_en": "The control-thread inbound mailbox was full and a cue/scene command was DROPPED (detail = dropped/total)"
+  },
+  "input_backend_swap_refused": {
+   "title": "입력 백엔드 교체가 거부되었습니다 — 파일 입력을 디코드할 수 없습니다 (detail=사유)",
+   "title_en": "The input backend swap was refused — the file input could not be decoded (detail = reason)"
+  },
+  "input_backend_token_unrecognized": {
+   "title": "알 수 없는 입력 백엔드 토큰이라 디바이스 캡처로 처리했습니다 (detail=허용 형식)",
+   "title_en": "Unrecognized input backend token, treated as device capture (detail = accepted forms)"
+  },
+  "input_file_sr_mismatch": {
+   "title": "파일 입력의 샘플레이트가 엔진과 달라 재생 피치·속도가 바뀌어 있습니다 (arg0=WAV Hz, arg1=엔진 Hz)",
+   "title_en": "The file input's sample rate differs from the engine, so playback pitch and speed are shifted (arg0 = WAV Hz, arg1 = engine Hz)"
+  },
+  "input_file_sr_mismatch_cleared": {
+   "title": "파일 입력 샘플레이트 불일치 경고가 해제되었습니다 (detail=rates_match 또는 not_a_file_input)",
+   "title_en": "The file-input sample-rate mismatch warning has ended (detail = rates_match or not_a_file_input)"
+  },
+  "input_reconnect_resync": {
+   "title": "shm 입력으로 교체되어 링 재동기화 동안 짧은 오디오 공백이 예상됩니다",
+   "title_en": "Swapped to an shm input; a brief audio gap is expected while the ring resyncs"
+  },
+  "ir_dropped_on_swap": {
+   "title": "장치/샘플레이트/버퍼 교체 뒤 베뉴 IR 을 다시 로드하지 못해 리버브가 기본 스텁(무음)이 되었습니다 (detail=경로·사유)",
+   "title_en": "The venue IR could not be re-loaded after a device / sample-rate / buffer swap, so the reverb fell back to the default stub (SILENT) (detail = path and reason)"
+  },
+  "ir_stub_active": {
+   "title": "IR 리버브가 선택되어 있지만 IR 이 로드되지 않아 웻이 무음입니다",
+   "title_en": "IR reverb is selected but no IR is loaded, so the wet is SILENT"
+  },
+  "layout_exceeds_output": {
+   "title": "레이아웃 스피커 수가 물리 출력 채널보다 많아 일부 스피커가 출력되지 않습니다 (detail=미출력 수, arg0=스피커, arg1=출력 채널)",
+   "title_en": "The layout has more speakers than there are physical output channels, so some speakers produce NO output (detail = how many, arg0 = speakers, arg1 = output channels)"
+  },
+  "layout_too_many_speakers": {
+   "title": "이 빌드 최대치를 넘는 스피커 수의 레이아웃이 거절되었습니다 (arg0=요청, arg1=최대) — 이전 레이아웃 유지"
+  },
+  "lfe_sub_channel_lost": {
+   "title": "레이아웃 교체로 지정 LFE/서브 출력 채널이 사라져 베이스가 메인 전체로 대역제한 팬아웃됩니다"
+  },
+  "loudness_transport_overflow": {
+   "title": "라우드니스 계측 전송이 넘쳐 샘플이 버려지고 있습니다 — 표시된 LUFS 는 불완전한 오디오로 계산된 값입니다 (detail=dropped=직전 1초 동안 버린 샘플 수 total=누적)",
+   "title_en": "The loudness metering transport is overflowing and dropping samples — the reported LUFS is measured on incomplete audio (detail = dropped=<samples in the last second> total=<total>)"
+  },
+  "loudness_transport_overflow_cleared": {
+   "title": "라우드니스 계측 전송 넘침 경고가 해제되었습니다 — LUFS 가 다시 전체 오디오로 계산됩니다 (detail=metering_complete)",
+   "title_en": "The loudness metering overflow warning has ended — LUFS is measured on complete audio again (detail = metering_complete)"
+  },
+  "ltc_chan_out_of_range": {
+   "title": "/sys/ltc_chan 이 장치에 없는 입력 채널을 지정해 거절되었습니다 (detail=requested/input_channels)"
+  },
+  "matrix_patch_orphaned": {
+   "title": "레이아웃 교체 뒤 /matrix/spk_dev 패치 일부가 존재하지 않는 스피커를 가리켜 그 라우팅이 더는 적용되지 않습니다 (detail=건수)"
+  },
+  "matrix_replaces_legacy_route": {
+   "title": "/matrix/in_obj 가 활성화되어 모든 오브젝트의 /obj/input 라우팅을 대체했고, 보존되지 않는 라우팅이 1개 이상 있습니다 (detail=그 개수)"
+  },
+  "meta_sidecar_unbound": {
+   "title": "메타데이터 사이드카가 부팅 입력에 묶여 있어 지금 입력을 따라가지 않습니다 — 오브젝트는 OSC 만 따릅니다 (detail=meta/boot/now)",
+   "title_en": "The metadata sidecar is bound to the boot input and no longer tracks the current input — objects follow OSC only (detail = meta / boot / now)"
+  },
+  "meta_sidecar_unbound_cleared": {
+   "title": "메타데이터 사이드카 미연결 경고가 해제되었습니다 — 입력이 다시 부팅 링입니다 (detail=input_is_boot_ring)",
+   "title_en": "The metadata sidecar warning has ended — the input is the boot ring again (detail = input_is_boot_ring)"
+  },
+  "obj_id_out_of_range": {
+   "title": "이 빌드에 없는 오브젝트 ID 로 온 명령이 거절되었습니다 (arg0=틱 동안 거절 수)"
+  },
+  "obj_reverb_claim_no_send": {
+   "title": "오브젝트 전용 리버브를 요청했지만 reverb_send 가 0 이라 들리지 않습니다 (arg0=오브젝트)"
+  },
+  "obj_tracked_by_psn": {
+   "title": "PSN 트래커가 소유한 오브젝트에 OSC 위치 명령이 와서 거절되었습니다 (detail=obj/tracker/refused/total)"
+  },
+  "object_input_unfed": {
+   "title": "라우팅된 입력 채널이 없어 오브젝트가 무음으로 렌더되고 있습니다 (detail=silenced=직전 경고 이후 무음 처리된 블록 수 total=누적)",
+   "title_en": "Objects are rendering as silence because a routed input channel is absent (detail = silenced=<object-blocks since the previous warning> total=<total>)"
+  },
+  "object_input_unfed_cleared": {
+   "title": "입력 미연결 오브젝트 경고가 해제되었습니다 — 모든 오브젝트가 다시 입력을 받습니다 (detail=inputs_fed)",
+   "title_en": "The unfed-object warning has ended — every object is fed again (detail = inputs_fed)"
+  },
+  "object_source_input_ignored": {
+   "title": "열린 입력 채널이 없어 object_source=input 요청을 무시했습니다 — 소스는 사인파로 유지됩니다",
+   "title_en": "object_source=input was ignored because no input channels are open — the source stays a sine"
+  },
+  "output_chain_silent": {
+   "title": "입력 신호는 있는데 출력 체인에서 무음이 나가고 있습니다 (detail=복구 조치)",
+   "title_en": "There is input signal but the output chain is emitting SILENCE (detail = the recovery action)"
+  },
+  "output_chain_silent_cleared": {
+   "title": "출력 체인 무음 경고가 해제되었습니다 — 출력에 신호가 돌아왔습니다 (detail=signal_restored)",
+   "title_en": "The output-chain silence warning has ended — signal is back at the output (detail = signal_restored)"
+  },
+  "output_device_removed": {
+   "title": "장치 제거됨: 현재 출력 장치가 시스템에서 사라졌습니다 (payload = 장치 이름)",
+   "title_en": "Device removed: the current output device disappeared from the system (payload = device name)"
+  },
+  "output_limit_clamped": {
+   "title": "/output/limit 값이 허용 범위를 벗어나 클램프되어 적용되었습니다 (detail=요청->적용 dB, arg0=채널)"
+  },
+  "output_limit_not_finite": {
+   "title": "/output/limit 에 NaN/Inf 가 와서 거절되었습니다 (arg0=채널)"
+  },
+  "output_limiter_defeated": {
+   "title": "스피커 버스 브릭월 리미터가 무장 해제되어 있습니다 — 스피커 보호 없음",
+   "title_en": "The speaker-bus brickwall limiter is DEFEATED — the speakers are unprotected"
+  },
+  "output_limiter_rearmed": {
+   "title": "브릭월 리미터가 재무장되었습니다 (detail=sys_reset 이면 패닉 리셋에 의한 것)"
+  },
+  "output_limiting": {
+   "title": "출력 천장(-1 dBFS 기본) 리미팅이 걸려 샘플이 감쇠되었습니다 (detail=블록 수)"
+  },
+  "param_clamped_eq_above_nyquist": {
+   "title": "EQ 주파수가 나이퀴스트 이상이라 클램프되어 적용되었습니다 (arg0=건수)"
+  },
+  "param_clamped_eq_q_below_minimum": {
+   "title": "EQ Q 값이 최소치 미만이라 클램프되어 적용되었습니다 (arg0=건수)"
+  },
+  "param_clamped_group_eq": {
+   "title": "그룹 EQ 파라미터가 범위 밖이라 클램프되어 적용되었습니다 (arg0=건수)"
+  },
+  "param_clamped_obj_delay": {
+   "title": "오브젝트 딜레이(/obj/dsp param 4)가 딜레이 링 용량을 넘어 클램프되어 적용되었습니다 (arg0=건수)",
+   "title_en": "Object delay (/obj/dsp param 4) exceeded the delay-ring capacity and was applied clamped (arg0 = count)"
+  },
+  "param_clamped_obj_dsp": {
+   "title": "오브젝트 DSP 파라미터가 범위 밖이라 클램프된 값으로 적용되었습니다 (arg0=건수)"
+  },
+  "param_clamped_obj_eq": {
+   "title": "오브젝트 EQ 파라미터가 범위 밖이라 클램프되어 적용되었습니다 (arg0=건수)"
+  },
+  "param_clamped_obj_khf": {
+   "title": "오브젝트 k_hf(거리 고역 감쇠) 파라미터가 범위 밖이라 클램프되어 적용되었습니다 (arg0=건수)"
+  },
+  "param_clamped_output_eq": {
+   "title": "출력 EQ 파라미터가 범위 밖이라 클램프되어 적용되었습니다 (arg0=건수)"
+  },
+  "param_dropped_output_eq": {
+   "title": "출력 EQ 명령이 거절되어 이전 값이 유지됩니다 (arg0=건수)"
+  },
+  "param_not_finite_cmd": {
+   "title": "명령 디코드 단계에서 NaN/Inf 파라미터가 거절되었습니다 (detail=건수 first=<주소>)"
+  },
+  "param_not_finite_group_eq": {
+   "title": "그룹 EQ 싱크가 NaN/Inf 계수를 거절했습니다 (arg0=건수)"
+  },
+  "param_not_finite_obj_eq": {
+   "title": "오브젝트 EQ 싱크가 NaN/Inf 계수를 거절했습니다 (arg0=건수)"
+  },
+  "param_not_finite_wire": {
+   "title": "OSC 경계에서 NaN/Inf 파라미터가 거절되었습니다 (detail=건수 first=<주소>)"
+  },
+  "player_heartbeat_stale": {
+   "title": "외부 adm_player 하트비트가 5 초 이상 끊겼습니다 (detail=경과 초) — 마지막 위치로 계속 렌더 중"
+  },
+  "psn_coords_refused": {
+   "title": "/psn/coords 축 매핑이 잘못되어 거절되었습니다 (detail=요청 매핑)"
+  },
+  "psn_ingress_refused": {
+   "title": "PSN 패킷이 인그레스 가드에 의해 버려졌습니다 (detail=reason/dropped/cap)"
+  },
+  "psn_listen_failed": {
+   "title": "PSN 멀티캐스트 리스너를 열지 못했습니다 (detail=port/step) — 트래킹 수신 없음"
+  },
+  "psn_map_refused": {
+   "title": "/psn/map 이 이 빌드 최대치를 넘는 오브젝트를 가리켜 거절되었습니다 (detail=tracker/obj/max)"
+  },
+  "psn_tracker_stale": {
+   "title": "PSN 트래커 갱신이 끊겨 해당 오브젝트에 위치 적용을 멈췄습니다 (detail=tracker/obj/age_ms) — 얼어붙은 값으로 구동하지 않음"
+  },
+  "psn_unauthenticated_ingress": {
+   "title": "OSC 인증이 켜진 랙에서 인증 없는 PSN 수신을 열었습니다 (detail=group/port) — 트래킹 입력은 보호되지 않습니다"
+  },
+  "reset_demote_accepted": {
+   "title": "/sys/binaural_reset_demote 가 수락되어 런타임 강등 상태가 초기화되고 B2 가 재무장되었습니다"
+  },
+  "reset_demote_cooldown_active": {
+   "title": "/sys/binaural_reset_demote 가 거절되었습니다 — 마지막 수락 뒤 60 초가 지나지 않았습니다 (창당 한 번만 알림)"
+  },
+  "resync_incomplete_gave_up": {
+   "title": "이 화면(클라이언트)이 엔진 상태를 완전히 받지 못한 채 재요청을 포기했습니다 — 엔진이 아니라 이 브라우저의 상태가 오래된 것입니다",
+   "title_en": "This CLIENT gave up re-requesting a complete engine state dump — it is this browser's view that is stale, not the engine"
+  },
+  "resync_row_rate_limited": {
+   "title": "진행 중인 상태 덤프의 프레임이 송신 예산에 걸려 버려졌습니다 (detail=누적 손실 행 수)",
+   "title_en": "A frame of an IN-PROGRESS state dump was refused by the send budget and lost (detail = rows lost so far)"
+  },
+  "reverb_pool_over_cap": {
+   "title": "오브젝트별 레이트 테일 풀(arg0=K)이 가득 차 초과 요청은 공유 테일로 렌더됩니다 (detail=초과 수)"
+  },
+  "room_not_in_binaural": {
+   "title": "바이노럴과 룸 리버브가 동시에 켜져 있지만 룸 엔진은 스피커 버스에만 합산됩니다 — 바이노럴 모니터/캡처에는 룸이 없습니다"
+  },
+  "room_over_rt_speakers": {
+   "title": "공간 룸 리버브가 실시간 안전 스피커 상한을 넘겨 동작 중입니다 (arg0=스피커, arg1=상한) — O(spk²) 비용",
+   "title_en": "The spatial room reverb is running above the real-time-safe speaker ceiling (arg0 = speakers, arg1 = ceiling) — O(spk²) cost"
+  },
+  "room_over_rt_speakers_cleared": {
+   "title": "룸 리버브 실시간 상한 초과 경고가 해제되었습니다 (arg1=상한, detail=원인: room_off 또는 within_rt_safe)",
+   "title_en": "The room-reverb real-time ceiling warning has ended (arg1 = ceiling, detail = cause: room_off or within_rt_safe)"
+  },
+  "room_param_not_finite": {
+   "title": "/room/* 파라미터에 NaN/Inf 가 와서 거절되었습니다 (detail=건수)"
+  },
+  "room_refused_binaural_deliverable": {
+   "title": "--wav-binaural 산출물 렌더 중이라 /room/enable 1 또는 /reverb/select 2 가 거절되었습니다 (arg0=누적 거절 수)"
+  },
+  "rt_timing_unavailable": {
+   "title": "이 호스트의 steady_clock 이 느려(syscall 폴백) 바이노럴 런타임 자동 강등 감지가 꺼졌습니다 — B2 는 계속 렌더되지만 과부하 시 ambivs_demoted_runtime 경고가 나오지 않습니다"
+  },
+  "scene_delete": {
+   "title": "씬 삭제가 실패했습니다 (detail=사유)"
+  },
+  "scene_duplicate": {
+   "title": "씬 복제가 실패했습니다 (detail=사유)"
+  },
+  "scene_index_rejected": {
+   "title": "씬 폴더의 index.json 이 손상되어 디스크에서 다시 만들었습니다 (detail=경로와 사유)",
+   "title_en": "The scene folder's index.json was malformed and has been rebuilt from disk (detail = path and reason)"
+  },
+  "scene_load_rejected": {
+   "title": "씬 파일이 손상되어 불러오기가 거부되었습니다 — 현재 씬이 유지됩니다 (detail=사유)",
+   "title_en": "A scene file was malformed and the load was rejected — the current scene is held (detail = reason)"
+  },
+  "scene_matrix_restore_refused": {
+   "title": "씬의 매트릭스 복원이 거부되었습니다 — 출력 메일박스 여유가 부족해 라우팅 매트릭스가 바뀌지 않았습니다 (detail=필요/여유 슬롯)",
+   "title_en": "A scene's matrix restore was refused — the outbound mailbox had too little room, so the routing matrices were not changed (detail = needed / free slots)"
+  },
+  "scene_not_found": {
+   "title": "요청한 이름의 씬이 없어 현재 씬을 유지합니다 (detail=요청한 이름)",
+   "title_en": "No scene has the requested name, so the current scene is held (detail = the requested name)"
+  },
+  "scene_rename": {
+   "title": "씬 이름 바꾸기가 실패했습니다 (detail=사유)"
+  },
+  "scene_save": {
+   "title": "씬 저장이 실패했습니다 (detail=사유) — 디스크에 기록되지 않았습니다",
+   "title_en": "Scene save failed (detail=reason) — nothing was written to disk"
+  },
+  "shm_attached_no_data": {
+   "title": "shm 링에 붙었지만 프로듀서가 아직 프레임을 쓰지 않았습니다 (detail=channels)"
+  },
+  "shm_producer_pacing": {
+   "title": "shm 프로듀서 블록 타임스탬프가 한 블록 주기 이상 드리프트했습니다 — 실시간 케이던스 이탈"
+  },
+  "shm_producer_stale": {
+   "title": "shm 프로듀서 하트비트가 100 ms 이상 멈췄습니다 (detail=경과 초) — 프로듀서가 멈췄거나 죽었습니다",
+   "title_en": "The shm producer's heartbeat has been stopped for more than 100 ms (detail = seconds elapsed) — the producer has stalled or died"
+  },
+  "shm_underrun": {
+   "title": "shm 입력 링에 새 블록이 없어 무음 블록이 대체되었습니다 (detail=누적 언더런)"
+  },
+  "signal_not_finite_internal": {
+   "title": "DSP 체인 내부에서 NaN/Inf 신호가 발생해 필터·리버브·리미터가 자동 복구하고 있습니다 (arg0=detail=직전 틱 이후 복구 건수)",
+   "title_en": "A NaN/inf signal appeared inside the DSP chain and filters / reverb / limiter are healing it (arg0 = detail = heals since the last tick)"
+  },
+  "signal_not_finite_internal_cleared": {
+   "title": "내부 NaN/Inf 신호 경고가 해제되었습니다 — 신호가 다시 유한합니다 (detail=signal_finite)",
+   "title_en": "The internal NaN/inf signal warning has ended — the signal is finite again (detail = signal_finite)"
+  },
+  "state_request_deferred": {
+   "title": "/sys/state_request 가 디바운스 창 안이라 지금 보내지 않고 보류했습니다 — 창이 열리면 덤프가 반드시 전송됩니다 (arg0=누적 보류 수)",
+   "title_en": "/sys/state_request arrived inside the debounce window and was DEFERRED, not refused — the dump WILL be sent when the window opens (arg0 = deferrals so far)"
+  },
+  "state_request_no_subscriber": {
+   "title": "/sys/state_request 가 거절되었습니다 — 에코 구독자가 없어 상태 덤프가 전송되지 않았습니다 (arg0=누적 거절 수)"
+  },
+  "system_state_ir_reload_failed": {
+   "title": "system_state.json 에 저장된 리버브 IR 파일을 복원 시 다시 불러오지 못했습니다 — IR 리버브가 무음 스텁으로 동작합니다 (detail=경로·사유)",
+   "title_en": "The reverb IR saved in system_state.json could not be reloaded during a restore; the IR reverb is running the silent stub (detail = path and reason)"
+  },
+  "system_state_restore_refused": {
+   "title": "부팅/복원 시 시스템 상태(출력단·랙 설정) 복원 명령 일부가 거절되어 리그가 system_state.json 상태가 아닙니다 (detail=거절/전체)",
+   "title_en": "Some system-state (output stage and rack settings) restore commands were refused at boot/restore, so the rig is NOT in the state system_state.json describes (detail = refused/total)"
+  },
+  "timeline_load_rejected": {
+   "title": "타임라인 불러오기가 거부되었습니다 — 이전 타임라인이 유지됩니다 (detail=사유)",
+   "title_en": "A timeline load was rejected — the previous timeline stays in force (detail = reason)"
+  },
+  "wfs_delay_envelope_clamped": {
+   "title": "WFS 지연 범위가 딜레이 라인 용량을 넘어 먼 쪽 스피커의 지연이 잘립니다 (arg0=필요 샘플, arg1=용량 8190; detail=배열 지름·sr·음속·배율)",
+   "title_en": "The WFS delay envelope exceeds the delay-line capacity, so the far-side speakers' delays are clamped (arg0 = samples needed, arg1 = capacity 8190; detail = array diameter, sr, speed of sound, multiplier)"
+  },
+  "wfs_delay_envelope_clamped_cleared": {
+   "title": "WFS 지연 범위 초과 경고가 해제되었습니다 (detail=within_envelope 또는 wfs_released)",
+   "title_en": "The WFS delay-envelope warning has ended (detail = within_envelope or wfs_released)"
+  },
+  "wfs_layout_irregular": {
+   "title": "WFS 가 LINEAR/CIRCULAR/PLANAR_GRID 로 분류되지 않는 레이아웃에서 실행 중입니다 — 파면 합성이 아닌 근사 렌더입니다"
+  },
+  "wfs_over_cap_vbap_fallback": {
+   "title": "WFS 활성 오브젝트 풀이 가득 차 초과 오브젝트가 VBAP 으로 렌더되고 있습니다 (detail=초과 수 obj<id>)",
+   "title_en": "The WFS active-object pool is full, so the excess objects are rendered with VBAP (detail = excess count obj<id>)"
+  },
+  "wfs_over_cap_vbap_fallback_cleared": {
+   "title": "WFS 풀 초과(VBAP 대체) 경고가 해제되었습니다 — 모든 WFS 오브젝트가 다시 슬롯을 얻었습니다 (detail=all_hosted)",
+   "title_en": "The WFS pool over-cap (VBAP fallback) warning has ended — every WFS object holds a slot again (detail = all_hosted)"
+  },
+  "width_ctl_group_out_of_range": {
+   "title": "/width/* 가 범위 밖 그룹 ID 를 지정해 거절되었습니다 (arg0=요청 그룹)"
+  },
+  "width_density_above_live_ceiling": {
+   "title": "라이브 width 밀도(density) 값이 현재 블록 크기의 크로스페이드 가능 상한을 넘어 보류/클램프되었습니다 (detail=requested/live_ceiling/in_force)"
+  },
+  "width_density_clamped_at_prepare": {
+   "title": "prepareToPlay 가 RT 예산 때문에 요청보다 낮은 velvet 밀도를 설치했습니다 (detail=requested/installed)"
+  },
+  "width_group_obj_out_of_range": {
+   "title": "/width/group 이 이 빌드에 없는 오브젝트 ID 를 지정해 거절되었습니다 (arg0=오브젝트)"
+  },
+  "width_group_out_of_range": {
+   "title": "/width/group 의 그룹 ID 가 범위 밖이라 오브젝트가 자동 그룹(−1)으로 되돌아갔습니다 (arg0=오브젝트)"
+  },
+  "width_halo_never_rendered": {
+   "title": "바이노럴 캡처가 끝났지만 width 헤일로가 한 번도 렌더되지 않았습니다 — 파일에 width 가 없습니다 (대개 HRTF 미로드)",
+   "title_en": "The binaural capture finished but the width halo was never rendered once — the file contains NO width (usually because no HRTF was loaded)"
+  },
+  "width_preset_obj_out_of_range": {
+   "title": "width 프리셋이 이 빌드 최대치를 넘는 오브젝트 ID 를 지정해 해당 항목이 건너뛰어졌습니다 (arg0=오브젝트)"
+  },
+  "width_reshape_never_landed": {
+   "title": "캡처가 끝날 때까지 /width 리셰이프가 보류 상태였습니다 — 캡처된 오디오는 이전 width 값입니다",
+   "title_en": "A /width reshape was still pending when the capture ended — the captured audio carries the PREVIOUS width value"
+  },
+  "xfade_truncated_cpu": {
+   "title": "CPU 여유 부족으로 바이노럴 모드 전환 크로스페이드가 2 블록에서 1 블록으로 줄었습니다 — 전환은 완료됨(품질 고지)"
+  },
+  "xrun_storm": {
+   "title": "xrun 발생률이 폭주 기준을 지속적으로 넘고 있습니다 (arg0=최근 창의 초당 xrun 수) — 상태=degraded",
+   "title_en": "The xrun rate has sustained at/above the storm threshold (arg0 = xruns/s in the last window) — state is degraded"
+  },
+  "xrun_storm_cleared": {
+   "title": "xrun 폭주가 해제되었습니다 (detail=연속 클린 초)",
+   "title_en": "The xrun storm has cleared (detail = consecutive clean seconds)"
+  }
+ }
+}
