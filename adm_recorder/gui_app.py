@@ -142,6 +142,22 @@ def _unique_output_path(path: Path) -> Path:
     return parent / f"{stem}_{n}{suf}"
 
 
+def _parse_sys_warning_args(args: list) -> tuple[str, str]:
+    """Extract ``(category, detail)`` from a ``/sys/warning`` payload.
+
+    Wire shapes observed (docs/ipc_schema.md, EchoSubscriber.h:19): the common
+    one is ``,iiss <int> <int> "category" "detail"`` (e.g.
+    ``echo_rate_limited`` / ``"dropped=N"``), but some emitters send just
+    ``,s "category"`` with no detail string. Pull out the string arguments in
+    order rather than assuming a fixed arity, so either shape degrades to a
+    readable category with an empty/partial detail instead of raising.
+    """
+    strings = [a for a in args if isinstance(a, str)]
+    category = strings[0] if strings else "unknown"
+    detail = strings[1] if len(strings) > 1 else ""
+    return category, detail
+
+
 class _OscLogBridge(QObject):
     line = Signal(str)
 
@@ -157,6 +173,14 @@ class _CaptureErrorBridge(QObject):
     thread)."""
 
     error = Signal(str)
+
+
+class _EngineWarningBridge(QObject):
+    """Marshals a parsed ``/sys/warning`` from the OSC server thread to the GUI
+    thread (P-37). ``warning.emit(category, detail)`` called from any thread is
+    delivered via Qt.AutoConnection → QueuedConnection."""
+
+    warning = Signal(str, str)
 
 
 class MainWindow(QMainWindow):
@@ -178,6 +202,8 @@ class MainWindow(QMainWindow):
         self._sr = 48000
         self._osc_log_bridge = _OscLogBridge()
         self._osc_log_bridge.line.connect(self._append_osc_log)
+        self._engine_warning_bridge = _EngineWarningBridge()
+        self._engine_warning_bridge.warning.connect(self._on_engine_warning)
         self._levels_bridge = _LevelsBridge()
         # Capture errors arrive on the PortAudio thread; the bridge re-emits
         # them on the GUI thread (Qt.AutoConnection across threads → queued).
@@ -824,6 +850,21 @@ class MainWindow(QMainWindow):
 
     def _on_osc_raw(self, addr: str, args: list) -> None:
         self._osc_log_bridge.line.emit(f"{addr}  {args!r}")
+        if addr == "/sys/warning":
+            # P-37: the engine's /sys/warning was reaching only the raw OSC
+            # log above, which caps at 800 lines and is dominated by the
+            # echo/position firehose during normal capture — exactly when a
+            # rate-limit warning (echo_rate_limited) is most likely to be
+            # emitted, and most likely to scroll past unseen. Pull it out as
+            # a distinct WARN log line + status-bar message so an operator
+            # who is not watching the raw log still sees it.
+            category, detail = _parse_sys_warning_args(args)
+            self._engine_warning_bridge.warning.emit(category, detail)
+
+    def _on_engine_warning(self, category: str, detail: str) -> None:
+        message = f"{category} ({detail})" if detail else category
+        self._log_ui("WARN", f"/sys/warning: {message}")
+        self._status.showMessage(f"Engine warning: {message}", 8000)
 
     def _toggle_record(self) -> None:
         if self._recording:
