@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import Final
 
-from .ipc_sink import _heartbeat_ms, next_pow2
+from .ipc_sink import _fence, _heartbeat_ms, next_pow2
 
 _log = logging.getLogger(__name__)
 
@@ -315,10 +315,13 @@ class MetaRingSink:
             self._rec_seq += 1
             wi += 1
 
-        # Best-effort scheduler nudge — NOT a memory fence. On x86-64 (TSO) the
-        # prior record stores are visible-before the write_idx store below
-        # (mirror ipc_sink P3 / A2 R4 assumption).
-        os.sched_yield()
+        # RELEASE half (A-14, mirror ipc_sink). Every record store above must be
+        # globally visible BEFORE the write_idx store below — the consumer
+        # acquire-loads write_idx (MetaRingConsumer.cpp:171/252/254/285) and then
+        # reads those very records. This used to be `os.sched_yield()`, which is
+        # a scheduler hint and NOT a barrier: correct only by accident on
+        # x86-64 TSO, wrong on ARM64 (P-33). See `ipc_sink._resolve_fence`.
+        _fence()
 
         # Publish write_idx LAST in strict program order.
         self._write_idx = wi
@@ -337,6 +340,10 @@ class MetaRingSink:
 
     def _set_state(self, state: int) -> None:
         self._state = state
+        # RELEASE fence: the consumer acquire-loads producer_state
+        # (MetaRingConsumer.cpp:322) and treats Closed(3) as "everything the
+        # producer ever wrote is now final" (mirror ipc_sink._set_state, P-33).
+        _fence()
         struct.pack_into(_U32, self._shm.buf, OFF_PRODUCER_STATE, state)
 
     # ── lifecycle ──────────────────────────────────────────────────────────────

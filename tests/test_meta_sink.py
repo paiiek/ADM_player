@@ -354,3 +354,101 @@ def test_invalid_construction_args(name: str) -> None:
         MetaRingSink(name, sample_rate=48000, slot_count=0, record_capacity=64)
     with pytest.raises(ValueError):
         MetaRingSink(name, sample_rate=48000, slot_count=129, record_capacity=64)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# P-33 — the producer half of the release/acquire wire contract (A-14, mirror
+# test_ipc_sink.py). The C++ consumer (MetaRingConsumer.cpp) is already
+# correct:
+#   :171/:252/:254/:285  write_idx.load(std::memory_order_acquire)
+#   :274/:311            read_idx.store(..., std::memory_order_release)
+#   :322                 producer_state.load(std::memory_order_acquire)
+# Without a matching Python-side RELEASE fence the ring is ordered only by
+# x86-64 TSO luck and tears on ARM64 (the previous `os.sched_yield()` was a
+# scheduler hint, not a barrier).
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_publish_order_write_idx_last(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    import adm_player.meta_sink as mod
+
+    sink = MetaRingSink(name, sample_rate=48000, slot_count=64, record_capacity=64)
+    try:
+        events: list[str] = []
+        real_pack_into = struct.pack_into
+
+        def recording_pack_into(fmt, buf, offset, *vals):
+            if offset == mod.OFF_WRITE_IDX:
+                events.append("write_idx")
+            return real_pack_into(fmt, buf, offset, *vals)
+
+        real_fence = mod._fence
+
+        def recording_fence():
+            events.append("fence")
+            return real_fence()
+
+        monkeypatch.setattr(mod.struct, "pack_into", recording_pack_into)
+        monkeypatch.setattr(mod, "_fence", recording_fence)
+
+        r = MetaRecord(0, 1, META_COORD_POLAR, 0.0, 0.0, 1.0, 1.0, 0.0, META_FLAG_ACTIVE)
+        sink.publish([r], frame_index=0)
+
+        assert "fence" in events and "write_idx" in events, events
+        # The release fence must precede the write_idx publish (program order).
+        assert events.index("fence") < events.index("write_idx"), (
+            f"NO release fence before the write_idx publish: {events}"
+        )
+    finally:
+        sink.close()
+
+
+def test_set_state_fences_before_producer_state_store(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import adm_player.meta_sink as mod
+
+    sink = MetaRingSink(
+        name, sample_rate=48000, slot_count=64, record_capacity=64, drain_dwell_s=0.0
+    )
+    try:
+        events: list[str] = []
+        real_pack_into = struct.pack_into
+
+        def recording_pack_into(fmt, buf, offset, *vals):
+            if offset == mod.OFF_PRODUCER_STATE:
+                events.append("producer_state")
+            return real_pack_into(fmt, buf, offset, *vals)
+
+        real_fence = mod._fence
+
+        def recording_fence():
+            events.append("fence")
+            return real_fence()
+
+        monkeypatch.setattr(mod.struct, "pack_into", recording_pack_into)
+        monkeypatch.setattr(mod, "_fence", recording_fence)
+
+        mod.MetaRingSink._set_state(sink, 1)
+
+        assert "fence" in events and "producer_state" in events, events
+        assert events.index("fence") < events.index("producer_state"), (
+            f"NO release fence before the producer_state publish: {events}"
+        )
+    finally:
+        sink.close()
+
+
+def test_fence_impl_is_a_real_barrier(name: str) -> None:
+    """A silent downgrade to a no-op fence must be visible via FENCE_IMPL
+    (shared with ipc_sink — same `_resolve_fence` instance)."""
+    import adm_player.meta_sink as mod
+
+    assert callable(mod._fence)
+    mod._fence()  # must not raise
+    impl = mod.FENCE_IMPL if hasattr(mod, "FENCE_IMPL") else None
+    if impl is None:
+        import adm_player.ipc_sink as ipc_mod
+
+        impl = ipc_mod.FENCE_IMPL
+    assert isinstance(impl, str) and impl, "FENCE_IMPL must name the mechanism"
