@@ -60,6 +60,7 @@ from .engine_echo import start_engine_echo_ingest
 from .osc_control import OscControlBridge, start_osc_control_server
 from .osc_ingest import OscIngestRouter, start_osc_server
 from .osc_record_throttle import OSC_POSITION_RECORD_HZ, make_position_callback
+from .sys_warning import parse_sys_warning_args as _parse_sys_warning_args
 from .timeline_store import ObjectBlock, TimelineStore, events_to_object_blocks
 
 # Dark UI aligned with ADM Player
@@ -140,22 +141,6 @@ def _unique_output_path(path: Path) -> Path:
             return cand
         n += 1
     return parent / f"{stem}_{n}{suf}"
-
-
-def _parse_sys_warning_args(args: list) -> tuple[str, str]:
-    """Extract ``(category, detail)`` from a ``/sys/warning`` payload.
-
-    Wire shapes observed (docs/ipc_schema.md, EchoSubscriber.h:19): the common
-    one is ``,iiss <int> <int> "category" "detail"`` (e.g.
-    ``echo_rate_limited`` / ``"dropped=N"``), but some emitters send just
-    ``,s "category"`` with no detail string. Pull out the string arguments in
-    order rather than assuming a fixed arity, so either shape degrades to a
-    readable category with an empty/partial detail instead of raising.
-    """
-    strings = [a for a in args if isinstance(a, str)]
-    category = strings[0] if strings else "unknown"
-    detail = strings[1] if len(strings) > 1 else ""
-    return category, detail
 
 
 class _OscLogBridge(QObject):
